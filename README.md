@@ -12,5 +12,3 @@ This repository contains the core library and admission service for the AAAC pro
 make run MODE=aaac   # start the full system
 make test            # run the test suite
 ```
-
-See the implementation plan in `implementation_plan.md` for detailed roadmap.
