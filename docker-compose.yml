@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: aaac_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  admission:
+    build: .
+    container_name: aaac_admission
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - AAAC_TOKEN_SECRET=${AAAC_TOKEN_SECRET}
+    depends_on:
+      - redis
+
+  delivery:
+    image: python:3.11-slim
+    container_name: aaac_delivery
+    command: tail -f /dev/null  # placeholder stub
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+
+  origin:
+    image: python:3.11-slim
+    container_name: aaac_origin
+    command: tail -f /dev/null  # placeholder stub
+    ports:
+      - "8002:8002"
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:

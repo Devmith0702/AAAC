@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aaac"
+version = "0.1.0"
+description = "Adaptive Admission Control core implementation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Your Name", email = "you@example.com"}]
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "redis>=5",
+    "pydantic>=2",
+    "lightgbm",
+    "scikit-learn",
+    "joblib",
+    "pandas",
+    "matplotlib",
+    "pyyaml"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
