@@ -8,7 +8,7 @@ from typing import Any
 # Allowed event vocabulary
 ALLOWED_EVENTS = {
     "JOIN", "ESTIMATE", "ADMIT", "COMPLETE", "TIMEOUT",
-    "REQUEUE", "DOWNGRADE", "ABANDON", "ORIGIN_SAMPLE", "CONTROL"
+    "REQUEUE", "DOWNGRADE", "FORCED_FLOOR", "ABANDON", "ORIGIN_SAMPLE", "CONTROL"
 }
 
 class EventLogger:

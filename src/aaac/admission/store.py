@@ -28,7 +28,7 @@ class QueueStore(Protocol):
     async def create_ticket(self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass, attempt: int, expires_at: float | None = None) -> None: ...
     async def get_ticket(self, tid: str) -> TicketData | None: ...
     async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]: ...
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None: ...
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None: ...
     async def position(self, tid: str) -> int: ...
     async def waiting_count(self) -> int: ...
     async def inflight_count(self) -> int: ...
@@ -123,12 +123,15 @@ class RedisQueueStore:
             admitted.append((result[i].decode(), float(result[i+1].decode())))
         return admitted
         
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None:
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
         pipe = self.r.pipeline()
         if new_class is not None:
             pipe.hset(key, "class", str(int(new_class)))
+        if attempt is not None:
+            pipe.hset(key, "attempt", str(attempt))
         pipe.hset(key, "state", "WAITING")
+        pipe.zrem(f"aaac:{self.run_id}:inflight", tid)
         pipe.zadd(f"aaac:{self.run_id}:waiting", {tid: score})
         await pipe.execute()
         
@@ -223,12 +226,15 @@ class InMemoryQueueStore:
             self._inflight.sort(key=lambda x: x[0])
             return admitted
             
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None:
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
         async with self._lock:
             t = self._tickets[tid]
             if new_class is not None:
                 t["class"] = new_class
+            if attempt is not None:
+                t["attempt"] = attempt
             t["state"] = "WAITING"
+            self._inflight = [(e, t_id) for e, t_id in self._inflight if t_id != tid]
             self._waiting.append((score, tid))
             self._waiting.sort(key=lambda x: x[0])
             
