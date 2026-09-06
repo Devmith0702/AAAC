@@ -2,8 +2,7 @@ import asyncio
 import time
 import uuid
 import json
-from typing import Any
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -57,9 +56,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AAAC Admission Core", lifespan=lifespan)
 cfg = get_config()
 
+import random as _random
+_rng = _random.Random(cfg.seed)
+
 @app.post("/queue/join")
 async def queue_join(req: JoinRequest):
-    tid = str(uuid.uuid4())
+    tid = f"{_rng.getrandbits(128):032x}"
     seq = await store.next_seq()
     
     true_class = AccessClass(req.true_class)
@@ -117,8 +119,8 @@ async def queue_estimate(est: LinkEstimate):
         confidence=est.confidence
     )
     
-    # Reinsert the ticket to update its access class without losing position (score = join_seq)
-    await store.reinsert(est.ticket_id, score=ticket.join_seq, new_class=est.access_class)
+    # Update the ticket's access class without losing position or triggering timeout logic
+    await store.update_class(est.ticket_id, est.access_class)
     
     return {"accepted": True, "access_class": est.access_class.value}
 

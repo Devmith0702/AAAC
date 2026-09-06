@@ -71,7 +71,7 @@ async def test_requeue_aaac_downgrade(store, logger, mock_cfg):
         "TIMEOUT", ticket_id="t1", access_class=int(AccessClass.HIGH), true_class=int(AccessClass.HIGH), attempt=1
     )
     logger.log.assert_any_call(
-        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=1
+        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=1, forced_floor=False
     )
     logger.log.assert_any_call(
         "REQUEUE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=2, position=0
@@ -79,11 +79,11 @@ async def test_requeue_aaac_downgrade(store, logger, mock_cfg):
 
 @pytest.mark.asyncio
 async def test_invariant_i4_forced_floor(store, logger, mock_cfg):
-    """I4: Simulate a LOW client that fails until it reaches ESSENTIAL (LOW).
+    """I4: Simulate a HIGH client that fails until it reaches max_attempts.
     
-    When attempts >= max_attempts, it is forced to LOW and logs FORCED_FLOOR.
+    When attempts >= max_attempts, it is forced to LOW and logs DOWNGRADE with forced_floor=True.
     """
-    await store.create_ticket("t1", 100, AccessClass.HIGH, AccessClass.LOW, mock_cfg.admission.max_attempts, None)
+    await store.create_ticket("t1", 100, AccessClass.HIGH, AccessClass.HIGH, mock_cfg.admission.max_attempts, None)
     
     await handle_timeout("t1", store, logger, mock_cfg)
     
@@ -91,9 +91,9 @@ async def test_invariant_i4_forced_floor(store, logger, mock_cfg):
     assert ticket.access_class == AccessClass.LOW
     assert ticket.attempt == mock_cfg.admission.max_attempts + 1
     
-    # Verify FORCED_FLOOR was emitted
+    # Verify FORCED_FLOOR was emitted as a DOWNGRADE with forced_floor=True
     logger.log.assert_any_call(
-        "FORCED_FLOOR", ticket_id="t1", access_class=int(AccessClass.LOW), true_class=int(AccessClass.HIGH), attempt=mock_cfg.admission.max_attempts + 1
+        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.LOW), true_class=int(AccessClass.HIGH), attempt=mock_cfg.admission.max_attempts, forced_floor=True
     )
 
 @pytest.mark.asyncio

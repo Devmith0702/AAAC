@@ -42,13 +42,6 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
         # AAAC mode: downgrade class, keep score the same (non-regressive)
         if ticket.attempt >= cfg.admission.max_attempts:
             new_class = AccessClass.LOW
-            await logger.log(
-                "FORCED_FLOOR",
-                ticket_id=tid,
-                access_class=int(new_class),
-                true_class=int(ticket.true_class),
-                attempt=new_attempt
-            )
         else:
             new_class = downgrade(ticket.access_class)
             
@@ -58,7 +51,8 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
             ticket_id=tid,
             access_class=int(new_class),
             true_class=int(ticket.true_class),
-            attempt=ticket.attempt
+            attempt=ticket.attempt,
+            forced_floor=(ticket.attempt >= cfg.admission.max_attempts)
         )
         
     await store.reinsert(tid, score=score, new_class=new_class, attempt=new_attempt)

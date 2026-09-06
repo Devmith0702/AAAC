@@ -29,6 +29,7 @@ class QueueStore(Protocol):
     async def get_ticket(self, tid: str) -> TicketData | None: ...
     async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]: ...
     async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None: ...
+    async def update_class(self, tid: str, new_class: AccessClass) -> None: ...
     async def position(self, tid: str) -> int: ...
     async def waiting_count(self) -> int: ...
     async def inflight_count(self) -> int: ...
@@ -150,6 +151,20 @@ class RedisQueueStore:
         pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{target_class}", 1)
         
         await pipe.execute()
+        
+    async def update_class(self, tid: str, new_class: AccessClass) -> None:
+        key = f"aaac:{self.run_id}:ticket:{tid}"
+        pipe = self.r.pipeline()
+        old_class_bytes = await self.r.hget(key, "class")
+        
+        if old_class_bytes:
+            old_class = int(old_class_bytes)
+            new_cls = int(new_class)
+            if old_class != new_cls:
+                pipe.hset(key, "class", str(new_cls))
+                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{old_class}", -1)
+                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{new_cls}", 1)
+                await pipe.execute()
         
     async def position(self, tid: str) -> int:
         rank = await self.r.zrank(f"aaac:{self.run_id}:waiting", tid)
@@ -277,6 +292,17 @@ class InMemoryQueueStore:
             self._waiting.sort(key=lambda x: x[0])
             self._counters["timed_out"][old_class] += 1
             self._counters["waiting"][str(int(t["class"]))] += 1
+            
+    async def update_class(self, tid: str, new_class: AccessClass) -> None:
+        async with self._lock:
+            t = self._tickets.get(tid)
+            if t:
+                old_cls = str(int(t["class"]))
+                new_cls = str(int(new_class))
+                if old_cls != new_cls:
+                    t["class"] = new_class
+                    self._counters["waiting"][old_cls] -= 1
+                    self._counters["waiting"][new_cls] += 1
             
     async def position(self, tid: str) -> int:
         async with self._lock:

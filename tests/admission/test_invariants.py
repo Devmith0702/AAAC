@@ -84,20 +84,20 @@ async def test_invariant_i1_position_non_increasing(base_config):
             if ticket and ticket.state == "WAITING":
                 pos = await store.position(tid)
                 position_history[tid].append(pos)
-                        # Simulate timeouts for half the admitted tickets
-            if admitted:
-                # Force expire all
-                expired_tids = await store.expire_inflight(now + 100)
+        # Simulate timeouts for half the admitted tickets
+        if admitted:
+            # Force expire all
+            expired_tids = await store.expire_inflight(now + 100)
+            
+            timeouts = expired_tids[:len(expired_tids)//2]
+            completes = expired_tids[len(expired_tids)//2:]
+            
+            for tid in timeouts:
+                # handle_timeout will reinsert
+                await handle_timeout(tid, store, logger, cfg)
                 
-                timeouts = expired_tids[:len(expired_tids)//2]
-                completes = expired_tids[len(expired_tids)//2:]
-                
-                for tid in timeouts:
-                    # handle_timeout will reinsert
-                    await handle_timeout(tid, store, logger, cfg)
-                    
-                for tid in completes:
-                    await store.complete(tid, "COMPLETED")
+            for tid in completes:
+                await store.complete(tid, "COMPLETED")
                 
         # Record positions after requeue
         for tid in tids:
@@ -105,24 +105,15 @@ async def test_invariant_i1_position_non_increasing(base_config):
             if ticket and ticket.state == "WAITING":
                 pos = await store.position(tid)
                 position_history[tid].append(pos)
-                    # 3. Assert I1
-        for tid, history in position_history.items():
-            # In AAAC mode, a ticket's position can temporarily drop to 0 when admitted, 
-            # and then go to some value > 0 if it times out and is re-inserted behind other re-inserted tickets.
-            # However, the number of unresolved tickets ahead of it NEVER increases.
-            # Thus, its position never exceeds its initial position.
-            assert max(history) <= history[0], f"I1 VIOLATION: Ticket {tid} position exceeded initial position!"
-            
-            # For the timeout trajectory, the position at each subsequent re-insertion must be non-increasing.
-            # We can verify this by checking that the maximum position in the future never exceeds the current position.
-            # i.e., running maximum from the right is non-increasing.
-            highest_future = 0
-            for pos in reversed(history):
-                highest_future = max(highest_future, pos)
-                # The highest position it will ever see in the future cannot exceed its past position
-                # Wait, this is only true if we filter out the 0s (when it's admitted/popped).
-                # To be safe, we just assert the primary invariant: it never goes further back than it started.
-                pass
+                
+    # 3. Assert I1
+    for tid, history in position_history.items():
+        # In AAAC mode, a ticket's position can temporarily drop to 0 when admitted, 
+        # and then go to some value > 0 if it times out and is re-inserted behind other re-inserted tickets.
+        # However, the number of unresolved tickets ahead of it NEVER increases.
+        # Thus, its position never exceeds its initial position.
+        assert max(history) <= history[0], f"I1 VIOLATION: Ticket {tid} position exceeded initial position!"
+
 
 
 @pytest.mark.asyncio
