@@ -549,6 +549,33 @@ four in ten fast users get a plainer page than they needed. The brief calls that
 cheap. Whether it is *that* cheap is my call, and the chosen values plus the
 reasoning go in `MODEL_CARD.md`.
 
+**Known measurement property: not every client gets classified, and the ones
+that miss out are not a random sample.**
+
+A client needs `min_rtt_samples` (5) status polls before it can be classified,
+and `poll_interval_ms` is 2000 — so roughly **8–10 seconds of queueing** before
+an estimate is possible at all. A client admitted faster than that never
+qualifies, never submits, and takes M1's MEDIUM default.
+
+That population is systematically skewed. Short waits happen during ramp-up and
+in the tail, and they happen disproportionately to clients the queue could
+serve quickly. The classifier therefore engages most where the queue is
+longest — which is where it matters — but it means **a headline accuracy figure
+averaged over all clients would be computed partly over clients that were never
+classified.** That number would be meaningless, and it would look fine.
+
+M3 can separate the three populations from the event log as it stands, with no
+contract change:
+
+| Population | How to identify it |
+|---|---|
+| Classified | `ESTIMATE` with `fallback == false` |
+| Estimated but low-confidence | `ESTIMATE` with `fallback == true` |
+| Never classified | a `JOIN` with no `ESTIMATE` for that `ticket_id` |
+
+**Report classifier accuracy over the classified subset only, and report the
+never-classified fraction beside it as its own number.** Do not blend them.
+
 ### 5.2 Open questions — resolve before the shipping model is trained
 
 1. ~~**`loss_ratio` vs `fail_ratio` are identical as specified.**~~ **Closed

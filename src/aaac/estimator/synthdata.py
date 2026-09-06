@@ -136,6 +136,12 @@ def _simulate_sample(
     tput_kbps = max(tput_kbps, 30.0)          # floor: nothing is truly 0
     probe_duration_ms = (PROBE_BYTES * 8.0) / tput_kbps
 
+    # TODO before the measured-trace retrain: model probe FAILURE, not just
+    # slowness. Throughput is floored at 30 kbps here, so a live probe that
+    # returns zero bytes lands just below anything the model was trained on.
+    # The live client clamps to this floor for that reason (client/probe.py),
+    # and the zero-byte case is reported honestly and sits outside support.
+    #
     # A congested link sometimes stalls mid-transfer. Occasional heavy-tailed
     # inflation, more common on worse links, keeps the probe honest.
     if rng.random() < p.base_fail_rate * 4:
