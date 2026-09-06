@@ -29,10 +29,10 @@ model, and do not update `metrics.json` to make the mismatch go away.
 
 | | |
 |---|---|
-| `model_version` | `v2-synthetic-7f` |
+| `model_version` | `v3-synthetic-7f-ranges` |
 | Features | 7, in `FEATURE_NAMES` order (see `src/aaac/estimator/features.py`) |
 | Training data | synthetic, `n=12000`, `seed=1` |
-| Size | 189.6 KB (target < 200 KB) |
+| Size | 189.7 KB (target < 200 KB) |
 | Inference | 0.361 ms/call median (target < 2 ms) |
 
 Built with:
@@ -47,6 +47,12 @@ Built with:
 
 ## Version history
 
+- **`v3-synthetic-7f-ranges`** — identical model, but the bundle now carries
+  `feature_ranges`: the per-feature min/max of the training split. `infer.py`
+  uses them for fallback condition 5 (input outside training support) and
+  **rejects any bundle that lacks them** — a bundle that cannot say what it was
+  trained on cannot be range-checked, and skipping the check silently would mean
+  the guard quietly does not exist. Any `v1`/`v2` bundle therefore falls back.
 - **`v2-synthetic-7f`** — dropped `loss_ratio` from the feature vector, taking it
   from 8 features to 7. It duplicated `fail_ratio` exactly, because `LinkSample`
   carries only `failed_requests / total_requests`. See the DECISION note in

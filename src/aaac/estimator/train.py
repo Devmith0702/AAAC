@@ -48,7 +48,7 @@ from .features import FEATURE_NAMES
 from .synthdata import generate
 
 MODEL_PATH = Path("models/link_classifier.joblib")
-MODEL_VERSION = "v2-synthetic-7f"
+MODEL_VERSION = "v3-synthetic-7f-ranges"
 
 CLASS_NAMES = [AccessClass(i).name for i in range(3)]
 
@@ -192,9 +192,23 @@ def train(n: int = 12000, seed: int = 1) -> dict:
     per_call_ms = (time.perf_counter() - t0) / 200 * 1000
     print(f"inference latency   {per_call_ms:.3f} ms/call  (target < 2 ms)")
 
+    # Per-feature training support, so infer.py can refuse to answer about
+    # inputs from a region the model has never seen. Computed on the TRAINING
+    # split, because that is what "trained on" means -- not the test split, and
+    # not the full generated set.
+    feature_ranges = {
+        name: [float(X_tr[:, i].min()), float(X_tr[:, i].max())]
+        for i, name in enumerate(FEATURE_NAMES)
+    }
+    print()
+    print("per-feature training support (infer.py falls back outside this)")
+    for name, (lo, hi) in feature_ranges.items():
+        print(f"  {name:<24} {lo:12.4f} .. {hi:12.4f}")
+
     bundle = {
         "model": model,
         "feature_names": list(FEATURE_NAMES),   # infer.py validates against this
+        "feature_ranges": feature_ranges,       # fallback condition 5
         "model_version": MODEL_VERSION,
         "cost_matrix": COST_MATRIX.tolist(),
         "class_weight": CLASS_WEIGHT,

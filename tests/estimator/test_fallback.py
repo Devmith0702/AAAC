@@ -27,6 +27,18 @@ from aaac.estimator.train import COST_MATRIX
 
 MODEL_VERSION = "v-test"
 
+#: Wide enough that every sample below sits inside support, so these tests keep
+#: exercising fallback conditions 1-3 rather than tripping condition 5.
+WIDE_RANGES = {
+    "log10_throughput_kbps": [0.0, 7.0],
+    "rtt_mean_ms": [0.0, 10_000.0],
+    "rtt_p95_ms": [0.0, 20_000.0],
+    "rtt_jitter_ms": [0.0, 10_000.0],
+    "fail_ratio": [0.0, 1.0],
+    "stability": [0.0, 1.0],
+    "n_rtt_samples": [0.0, 500.0],
+}
+
 # Settings passed explicitly everywhere, so these tests never depend on
 # configs/run.yaml being present or on its current values.
 MIN_RTT_SAMPLES = 5
@@ -69,6 +81,7 @@ def make_bundle(path, proba=(0.95, 0.04, 0.01), **overrides):
     bundle = {
         "model": FixedProbaModel(list(proba)),
         "feature_names": list(FEATURE_NAMES),
+        "feature_ranges": dict(WIDE_RANGES),
         "model_version": MODEL_VERSION,
         "cost_matrix": COST_MATRIX.tolist(),
         "confidence_threshold": CONFIDENCE_THRESHOLD,
@@ -233,6 +246,7 @@ def test_bundle_without_cost_matrix_falls_back(tmp_path):
         {
             "model": FixedProbaModel([0.95, 0.04, 0.01]),
             "feature_names": list(FEATURE_NAMES),
+            "feature_ranges": dict(WIDE_RANGES),
             "model_version": MODEL_VERSION,
         },
         path,

@@ -23,7 +23,23 @@ FALLBACK CONDITIONS (section 4.1), evaluated in this order:
     2. fewer than min_rtt_samples usable RTT samples were collected
     3. the top class probability is below confidence_threshold
     4. the bundle fails validation: its feature_names have drifted from
-       FEATURE_NAMES, or it carries no cost_matrix
+       FEATURE_NAMES, or it carries no cost_matrix or feature_ranges
+    5. any feature falls outside the range the model was trained on
+
+CONDITION 5 IS THE ONE THAT COST US SOMETHING TO LEARN.
+
+On first contact with a real network the probe finished too fast to time,
+reported 524,288,000 kbps, and this function returned HIGH at 0.967 confidence
+with fallback=False. The model was not wrong. It was asked about a point nearly
+three decades outside anything in its training set, and it answered the way a
+tree ensemble always answers there: confidently, from the nearest leaf.
+
+Confidence guards the MODEL's uncertainty, not the INPUT's validity. A model
+expresses doubt only about regions it was trained on. Feed it a region it has
+never seen and it produces confident nonsense, and neither the class weights nor
+the expected-cost rule can help -- both operate on probabilities the model had no
+basis to produce. Condition 5 is the only thing in this file that checks the
+question before trusting the answer.
 
 Conditions 1 and 4 are both decided at load time, so a bundle failing either
 one behaves identically from the caller's side -- what differs is why.
@@ -43,6 +59,7 @@ classified.
 
 from __future__ import annotations
 
+import logging
 import statistics
 import threading
 from pathlib import Path
@@ -66,7 +83,15 @@ FALLBACK_CLASS = AccessClass.MEDIUM
 #: fine and we chose not to trust its answer for this particular sample.
 NO_MODEL_VERSION = "unavailable"
 
-_REQUIRED_BUNDLE_KEYS = ("model", "feature_names", "model_version", "cost_matrix")
+_REQUIRED_BUNDLE_KEYS = (
+    "model",
+    "feature_names",
+    "model_version",
+    "cost_matrix",
+    "feature_ranges",
+)
+
+log = logging.getLogger(__name__)
 
 
 # --- bundle loading -------------------------------------------------------
@@ -106,6 +131,21 @@ def _validate_bundle(bundle: Any) -> dict[str, Any] | None:
         return None
     if cost.shape != (len(AccessClass), len(AccessClass)):
         return None
+
+    ranges = bundle["feature_ranges"]
+    if not isinstance(ranges, dict) or set(ranges) != set(FEATURE_NAMES):
+        return None
+    for name in FEATURE_NAMES:
+        pair = ranges[name]
+        if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+            return None
+        try:
+            lo, hi = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError):
+            return None
+        if not (lo <= hi):
+            return None
+
     return bundle
 
 
@@ -146,6 +186,27 @@ def load_bundle(model_path: str | Path) -> dict[str, Any] | None:
 
 
 # --- decision rule --------------------------------------------------------
+
+
+def out_of_support(
+    features: np.ndarray, feature_ranges: dict[str, list[float]]
+) -> list[str]:
+    """Names of features falling outside the model's training support.
+
+    Strict: the recorded min and max, with no margin. A margin would be a
+    judgement about how far outside is "close enough", and there is no basis
+    for one -- a tree ensemble does not degrade gracefully outside its splits,
+    it simply reuses the boundary leaf. Empty list means every feature is
+    inside the region the model actually learned.
+    """
+    offenders: list[str] = []
+    flat = np.asarray(features, dtype=float).ravel()
+    for i, name in enumerate(FEATURE_NAMES):
+        lo, hi = feature_ranges[name]
+        value = float(flat[i])
+        if not np.isfinite(value) or value < lo or value > hi:
+            offenders.append(f"{name}={value:.4g} outside [{lo:.4g}, {hi:.4g}]")
+    return offenders
 
 
 def expected_cost_decision(proba: np.ndarray, cost_matrix: np.ndarray) -> int:
@@ -263,6 +324,20 @@ def classify(
         return _fallback(version)
 
     features = extract_features(sample).reshape(1, -1)
+
+    # Condition 5 -- the input is outside the region the model was trained on.
+    # Checked BEFORE predicting: there is no value in asking, and the answer
+    # would come back confident regardless.
+    offenders = out_of_support(features, bundle["feature_ranges"])
+    if offenders:
+        log.warning(
+            "ticket %s: input outside training support, falling back to %s -- %s",
+            sample.ticket_id,
+            FALLBACK_CLASS.name,
+            "; ".join(offenders),
+        )
+        return _fallback(version)
+
     try:
         proba = np.asarray(
             bundle["model"].predict_proba(features), dtype=float

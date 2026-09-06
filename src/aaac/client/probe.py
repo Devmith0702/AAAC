@@ -60,6 +60,18 @@ from aaac.common.schemas import LinkEstimate, LinkSample
 #: region of the feature space it was not trained on.
 TRAINING_FLOOR_KBPS = 30.0
 
+#: Highest throughput the generator produces (measured: n=12000, seed=1 tops out
+#: at ~803,000 kbps). Recorded for reference and used by tests -- but DELIBERATELY
+#: NOT applied as a clamp. See to_link_sample() for why the two ends of the
+#: distribution are not treated alike.
+TRAINING_CEILING_KBPS = 800_000.0
+
+#: A transfer window shorter than this is not a measurement. On a fast or
+#: loopback link the whole 64 KB can arrive in one chunk, making first-byte and
+#: last-byte the same instant; that is an absence of timing information, not
+#: infinite bandwidth.
+MIN_MEASURABLE_MS = 1.0
+
 #: Re-run the probe once if the client is still waiting after this long: a
 #: measurement taken a minute ago may describe a different network (section 4.1).
 PROBE_REFRESH_AFTER_S = 60.0
@@ -79,6 +91,16 @@ class ProbeResult:
         if self.duration_ms <= 0 or self.bytes_received <= 0:
             return 0.0
         return (self.bytes_received * 8.0) / self.duration_ms
+
+    @property
+    def degenerate(self) -> bool:
+        """True when the transfer completed too fast to time.
+
+        Not "very fast": unmeasurable. The bytes arrived in a single read, so
+        there is no window to divide by. Callers must not read throughput_kbps
+        as a bandwidth estimate when this is set.
+        """
+        return self.bytes_received > 0 and self.duration_ms < MIN_MEASURABLE_MS
 
 
 async def run_probe(
@@ -213,9 +235,27 @@ class LinkObservation:
         if self.probe is not None and self.probe.bytes_received > 0:
             probe_bytes = self.probe.bytes_received
             probe_duration_ms = self.probe.duration_ms
+
+            # THE FLOOR IS CLAMPED. THE CEILING IS NOT. The asymmetry is
+            # deliberate, and it mirrors the project's cost asymmetry.
+            #
+            # Too slow to be in training: clamping reports the link as the
+            # slowest thing the model knows, which is LOW. Correct, and safe.
+            # Falling back to MEDIUM instead would be an UPGRADE -- the
+            # optimistic error, handed to the client least able to absorb it.
+            #
+            # Too fast to be in training: clamping would report the link as the
+            # fastest thing the model knows, which is HIGH. That is the
+            # optimistic error, delivered with confidence, from a measurement
+            # that carried no information at all. So the raw value is left
+            # alone and fallback condition 5 catches it in infer.classify(),
+            # which lands on MEDIUM -- the cheap direction.
+            #
+            # A first attempt DID clamp both ends. It made the harness stop
+            # printing an absurd number while still returning HIGH with
+            # fallback=False, which fixed the symptom and left the defect.
             max_duration = (probe_bytes * 8.0) / TRAINING_FLOOR_KBPS
-            if probe_duration_ms > max_duration:
-                probe_duration_ms = max_duration
+            probe_duration_ms = min(probe_duration_ms, max_duration)
 
         return LinkSample(
             ticket_id=ticket_id,

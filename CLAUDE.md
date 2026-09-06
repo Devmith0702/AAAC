@@ -335,7 +335,13 @@ that makes them.
 2. fewer than `min_rtt_samples` RTT samples were collected,
 3. the top class probability is below `confidence_threshold`,
 4. the loaded bundle fails validation — its `feature_names` have drifted from
-   `FEATURE_NAMES`, or it carries no `cost_matrix`.
+   `FEATURE_NAMES`, or it carries no `cost_matrix` or `feature_ranges`,
+5. **any feature falls outside the range the model was trained on.** The bundle
+   carries per-feature min/max from the training split; `classify()` refuses to
+   answer outside them and names the offending feature in the log.
+
+Condition 5 is the one that cost us something to learn — see §5.1. It is the
+only check that interrogates the *question* rather than the answer.
 
 Condition 4 is not defensive boilerplate either; it is the worst failure mode
 available, because nothing raises. A bundle whose feature order has drifted is
@@ -465,6 +471,14 @@ baseline and converges in AAAC.
 - Probe math: synthetic transfer of known size and duration → throughput correct within 1%
 - Variant sizes inside budget; the 10× ratio holds (fails the build if a template grows)
 - `essential` HTML contains zero `<script>`, `<link>`, `<img>` — assert by parsing, not regex
+- **Use sentinel substitution wherever the question is "did this value reach the
+  output".** Render the field with a unique marker and look for the marker; do
+  not search for the real value. A substring check on real data passes for the
+  wrong reason far too easily, and it looks identical to a good assertion — two
+  such were found in one session: `"Kandy" in text` matched inside the centre
+  name *Central College, Kandy*, and `grade in html` matched the letter "A" in
+  arbitrary markup. Neither could ever have failed. Structural linting cannot
+  catch this class; only substitution can.
 - Tampered token → 401; expired token → 401; valid `cls=2` → `essential` served
 - Missing model file → pipeline still completes, all estimates marked `fallback`
 - Classifier: accuracy, per-class recall, and the optimistic-error rate specifically
@@ -548,6 +562,56 @@ optimistic errors at the price of HIGH-class recall falling to ~0.58 (0.580) —
 four in ten fast users get a plainer page than they needed. The brief calls that
 cheap. Whether it is *that* cheap is my call, and the chosen values plus the
 reasoning go in `MODEL_CARD.md`.
+
+**Confidence guards the model's uncertainty, not the input's validity.**
+
+This is the most important result of the project so far, and it was found on
+first contact with a real network rather than by any test.
+
+The entire cost-asymmetry design exists to stop a slow client being called
+fast — class weights during training, an expected-cost decision rule instead of
+argmax, four fallback conditions. On the first harness run against real
+services, `classify()` returned **HIGH at 0.967 confidence with
+`fallback=False`**. The probe had completed too fast to time on loopback and
+reported 524,288,000 kbps: `log10` **8.72**, against a training range of
+**1.262 – 5.905**. Nearly three decades outside support.
+
+**The model was not wrong.** It was asked about a region it had never seen, and
+a tree ensemble answers such questions confidently, from whichever leaf sits at
+the boundary. A model expresses doubt only about regions it was *trained* on;
+input from outside produces confident nonsense, and neither the class weights
+nor the expected-cost rule can help, because both operate on probabilities the
+model had no basis to produce. Nothing downstream noticed, because nothing
+downstream was looking at the input.
+
+Fallback condition 5 (§4.1) is the fix, and it generalises: the bundle now
+carries per-feature training ranges and `classify()` declines to answer outside
+them. The throughput ceiling clamp closes one instance; the condition closes the
+class. It is not hypothetical for other features either — loopback RTT measures
+~3.0 ms against a trained minimum of 3.018 ms.
+
+**For the write-up:** cost-sensitivity and confidence thresholds are guards on
+the model's *answer*. They are silent about whether the *question* was one the
+model can answer at all. Any deployed classifier needs a support check as well,
+and ours only exists because we ran the thing for real.
+
+**Determinism: reproducible decisions, not reproducible outcomes.**
+
+§3.10 rule 5 asks for deterministic behaviour given `seed`, and the client loop
+cannot fully deliver that — so the write-up must not claim it does.
+
+*Reproducible:* every client-side random choice comes from an RNG seeded on
+`(seed, client_id)`. There is no unseeded randomness anywhere in `client/`. The
+same seed makes the same decisions given the same inputs.
+
+*Not reproducible:* wall-clock timing, network RTT, the completion order of
+parallel sub-resource fetches, whether a transfer beats `expires_at`, and
+asyncio scheduling order. Two runs at the same seed will make identical choices
+and can still finish differently.
+
+State it in those words. The training pipeline (`synthdata` → `train`) **is**
+fully deterministic given a seed and reproduces byte-identical metrics; the
+live client is not, and conflating the two would overclaim.
 
 **Known measurement property: not every client gets classified, and the ones
 that miss out are not a random sample.**

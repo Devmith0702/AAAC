@@ -293,3 +293,89 @@ async def test_probe_and_polls_produce_a_usable_estimate():
     assert 0.0 <= est.confidence <= 1.0
     assert est.throughput_kbps > 0
     assert est.model_version
+
+
+# --- degenerate probe: unmeasurably fast is not infinitely fast -----------
+
+
+def test_single_chunk_probe_is_flagged_degenerate():
+    """The whole payload in one read gives no transfer window to divide by."""
+    from aaac.client.probe import MIN_MEASURABLE_MS
+
+    assert ProbeResult(65536, 0.001, ok=True).degenerate is True
+    assert ProbeResult(65536, MIN_MEASURABLE_MS - 0.0001, ok=True).degenerate is True
+    assert ProbeResult(65536, MIN_MEASURABLE_MS, ok=True).degenerate is False
+    assert ProbeResult(65536, 1024.0, ok=True).degenerate is False
+    # Nothing arrived at all: a failure, not a degenerate measurement.
+    assert ProbeResult(0, 0.0, ok=False).degenerate is False
+
+
+def test_degenerate_probe_is_NOT_clamped_at_the_ceiling():
+    """The fast end is deliberately left raw, so condition 5 can catch it.
+
+    Clamping here would report the link as the fastest thing the model knows --
+    HIGH -- from a measurement that carried no information. A first attempt did
+    exactly that: the absurd number stopped being printed, and classify() still
+    returned HIGH with fallback=False. Symptom fixed, defect intact.
+    """
+    obs = LinkObservation()
+    obs.record_probe(ProbeResult(65536, 0.001, ok=True))
+    sample = obs.to_link_sample("t-degenerate")
+
+    kbps = throughput_kbps(sample.probe_bytes, sample.probe_duration_ms)
+    assert kbps == pytest.approx(524_288_000.0, rel=1e-6)
+    assert sample.probe_bytes == 65536
+
+
+def test_degenerate_probe_reaches_the_support_check_and_falls_back():
+    """The end-to-end property: an untimeable probe must not yield HIGH."""
+    from aaac.estimator.infer import load_bundle, out_of_support
+
+    bundle = load_bundle("models/link_classifier.joblib")
+    if bundle is None:
+        pytest.skip("no exported bundle on disk; run aaac.estimator.train")
+
+    obs = LinkObservation()
+    obs.record_probe(ProbeResult(65536, 0.001, ok=True))
+    for rtt in (190.0, 250.0, 210.0, 230.0, 205.0, 220.0):
+        obs.record_request(True, rtt)
+    sample = obs.to_link_sample("t-degenerate")
+
+    offenders = out_of_support(extract_features(sample), bundle["feature_ranges"])
+    assert any("throughput" in o for o in offenders), (
+        "the degenerate reading must be visible to the support check"
+    )
+
+    est = classify(
+        sample,
+        model_path="models/link_classifier.joblib",
+        min_rtt_samples=5,
+        confidence_threshold=0.60,
+    )
+    assert est.fallback is True
+    assert est.access_class is AccessClass.MEDIUM
+    assert est.access_class is not AccessClass.HIGH
+
+
+def test_slow_end_is_still_clamped_not_fallen_back():
+    """The asymmetry: a genuinely slow link classifies LOW, it does not abstain.
+
+    Falling back to MEDIUM for a very slow client would be an UPGRADE -- the
+    optimistic error aimed at exactly the client least able to absorb it.
+    """
+    from aaac.estimator.infer import load_bundle, out_of_support
+
+    bundle = load_bundle("models/link_classifier.joblib")
+    if bundle is None:
+        pytest.skip("no exported bundle on disk; run aaac.estimator.train")
+
+    obs = LinkObservation()
+    obs.record_probe(ProbeResult(1024, 60_000.0, ok=False))   # ~0.14 kbps raw
+    for rtt in (300.0, 420.0, 380.0, 350.0, 410.0, 390.0):
+        obs.record_request(True, rtt)
+    sample = obs.to_link_sample("t-slow")
+
+    offenders = out_of_support(extract_features(sample), bundle["feature_ranges"])
+    assert not any("throughput" in o for o in offenders), (
+        f"the floor clamp should keep the slow end inside support: {offenders}"
+    )
