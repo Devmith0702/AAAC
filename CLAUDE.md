@@ -340,6 +340,19 @@ that makes them.
    carries per-feature min/max from the training split; `classify()` refuses to
    answer outside them and names the offending feature in the log.
 
+**The two ends of the throughput range are handled differently on purpose. Do
+not "fix" the inconsistency.** The client (`client/probe.py`) clamps the slow
+end and leaves the fast end raw:
+
+| End | If clamped, the model is told | Consequence |
+|---|---|---|
+| Slow — below training support | "the slowest link I know" → **LOW** | Correct and safe. Falling back to MEDIUM instead would be an **upgrade** — the optimistic error, handed to the client least able to absorb it. |
+| Fast — above training support | "the fastest link I know" → **HIGH** | **The optimistic error itself**, delivered with confidence, from a measurement that carried no information. Left raw so condition 5 catches it and lands on MEDIUM. |
+
+This is the cost asymmetry of §4.1 applied one layer below where the brief
+specifies it: at the measurement, not the decision. The two ends are not
+symmetric because their errors are not symmetric.
+
 Condition 5 is the one that cost us something to learn — see §5.1. It is the
 only check that interrogates the *question* rather than the answer.
 
@@ -594,6 +607,24 @@ class. It is not hypothetical for other features either — loopback RTT measure
 the model's *answer*. They are silent about whether the *question* was one the
 model can answer at all. Any deployed classifier needs a support check as well,
 and ours only exists because we ran the thing for real.
+
+**Corollary, and the more transferable lesson: do not sanitise an input upstream
+of the check that validates it.**
+
+The first fix for the above clamped throughput at both ends of the training
+range. It did not merely fail to help — it *removed the evidence the safety
+check needed*. By making 524,288,000 kbps look like a reasonable
+top-of-range value before `classify()` ever saw it, the clamp converted a
+detectable anomaly into an undetectable one. Condition 5 then found nothing
+wrong, `classify()` returned HIGH with `fallback=False` exactly as before, and
+**the test suite went green over a defect that was still fully present.** Only
+running the harness against real services showed it.
+
+A sanitiser placed upstream of a validity check does not protect the check; it
+blinds it. If a value must be both bounded and validated, validate first, or
+bound in a way the validator can still see. Generalise this beyond the
+estimator — it applies anywhere a guard reads a value something else has already
+normalised.
 
 **Determinism: reproducible decisions, not reproducible outcomes.**
 

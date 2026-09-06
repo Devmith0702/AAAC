@@ -17,12 +17,13 @@ claims traceable to an artefact on disk.
 | Metrics | `models/metrics.json` |
 | Hyperparameters, model version | the joblib bundle at `models/link_classifier.joblib` |
 | Cost matrix | the training source, `src/aaac/estimator/train.py` |
+| Training support | `feature_ranges` in the joblib bundle |
 | Thresholds | `configs/run.yaml` → `estimator.confidence_threshold` |
 
 If a number appears in the conversation but not in one of these files, it does not
 go in the card. If a file is missing, stop and say which one.
 
-## Required sections — all ten
+## Required sections — all eleven
 
 Refuse to emit a card missing any of these. An incomplete card is worse than none,
 because it reads as complete.
@@ -46,12 +47,26 @@ because it reads as complete.
    link called HIGH is a guaranteed timeout and is exactly the exclusion the
    project exists to remove; a fast link called LOW is a plainer page. State the
    price paid — HIGH-class recall — as a number, not as a hedge
-10. **Fallback behaviour** — the three conditions that produce
+10. **Training support (`feature_ranges`)** — the per-feature min and max the
+    model was trained on, as a table, copied from the bundle. This is not
+    documentation of the training run; it is a **serve-time contract**. It
+    decides when the model refuses to answer, so a card omitting it describes a
+    different system than the one running. State which split it came from (the
+    training split, not the full generated set), and that `classify()` falls
+    back to MEDIUM for any input outside it.
+
+    Record why it exists: a probe that completed too fast to time reported a
+    throughput nearly three decades outside training support, and the model
+    returned HIGH at 0.967 confidence with `fallback=False`. Confidence guards
+    the model's uncertainty, not the input's validity.
+11. **Fallback behaviour** — the five conditions that produce
     `access_class=MEDIUM, confidence=0.0, fallback=True`: model missing or
-    unloadable, fewer than `min_rtt_samples` RTT samples, top-class probability
-    below `confidence_threshold`. State the acceptance test: delete the joblib
-    file, run the full `aaac` pipeline, it completes with `fallback: true` on
-    every `ESTIMATE`
+    unloadable; fewer than `min_rtt_samples` RTT samples; top-class probability
+    below `confidence_threshold`; bundle validation failure (drifted
+    `feature_names`, or missing `cost_matrix` or `feature_ranges`); and any
+    feature outside its trained range. State the acceptance test: delete the
+    joblib file, run the full `aaac` pipeline, it completes with
+    `fallback: true` on every `ESTIMATE`
 
 ## Synthetic vs measured — say which, prominently
 
@@ -81,3 +96,6 @@ If a required section cannot be filled from the files on disk:
   exported model, whatever it scored.
 - Never describe a provisional choice as settled. The cost matrix is provisional
   (§5.1) and the card must say so.
+- Never omit `feature_ranges` because they look like an implementation detail.
+  They are the boundary of what the model may be asked, and a reader who does
+  not know them cannot tell a refusal from a prediction.
