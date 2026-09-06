@@ -296,14 +296,21 @@ belongs in a docstring.
 | Loss proxy | `failed_requests / total_requests`, where a failure is a timeout, reset, or 5xx |
 | Stability | `1 − clamp(stdev(rtt)/mean(rtt), 0, 1)` — coefficient-of-variation based |
 
-**Eight features, fixed order.** The order is a contract; the model learned
+**Seven features, fixed order.** The order is a contract; the model learned
 position-by-position. Any change forces a `model_version` bump and a model card
 update.
 
 ```
 log10(throughput_kbps), rtt_mean_ms, rtt_p95_ms, rtt_jitter_ms,
-loss_ratio, fail_ratio, stability, n_rtt_samples
+fail_ratio, stability, n_rtt_samples
 ```
+
+The brief specified eight, with `loss_ratio` alongside `fail_ratio`. They were
+the same number — `LinkSample` carries only `failed_requests / total_requests`,
+which is the brief's own definition of `loss_ratio`. `loss_ratio` was dropped as
+a C1-owner decision (open question 1, closed 2026-09-06); see the DECISION note
+in `features.py`. **`LinkEstimate.loss_ratio` (§3.6) is untouched** and is still
+reported on every estimate — the shared contract was not involved.
 
 **Model:** LightGBM, ~100 trees, `max_depth=4`, joblib export.
 Targets: file < 200 KB, inference < 2 ms.
@@ -368,6 +375,11 @@ Hard requirements:
   a high-RTT link.
 - A build test asserts `size(full) / size(essential) >= 10`. The proposal claims an
   order of magnitude, so it must be true and measurable.
+- **State the claim honestly in the write-up.** Not "we achieved 10×" — that is
+  circular, because we chose both numbers. The defensible claim is: *a realistic
+  styled results page costs roughly 90× what the information itself weighs, and
+  we can serve the information alone.* The ratio test is a regression guard
+  against `essential` creeping upward, not the headline result.
 - Accurate `Content-Length` on every response — M3 computes goodput from it.
 - Variant comes **only** from the verified token's `var` field.
 
@@ -475,22 +487,28 @@ by construction: LOW and HIGH are over a decade apart in throughput and are neve
 confused. Reporting it alone would look like a triumph and mean nothing. The error
 that actually occurs is MEDIUM→HIGH. Track `optimistic_error_rate` — any client
 judged *more capable than it is* — which captures the whole dangerous family.
-Current figures: 4.67% under naive argmax, 1.13% under the cost-sensitive rule.
+Current figures (`v2-synthetic-7f`, n=12000, seed=1): **4.60%** under naive
+argmax, **1.07%** under the cost-sensitive rule. The 8-feature `v1-synthetic`
+model scored 4.67% / 1.13%; dropping the duplicate column moved both slightly in
+the right direction.
 
 **The cost matrix is provisional.** Current settings buy that 4× reduction in
-optimistic errors at the price of HIGH-class recall falling to ~0.58 — roughly
+optimistic errors at the price of HIGH-class recall falling to ~0.58 (0.580) — roughly
 four in ten fast users get a plainer page than they needed. The brief calls that
 cheap. Whether it is *that* cheap is my call, and the chosen values plus the
 reasoning go in `MODEL_CARD.md`.
 
 ### 5.2 Open questions — resolve before the shipping model is trained
 
-1. **`loss_ratio` vs `fail_ratio` are identical as specified.** `LinkSample` only
-   carries `failed_requests / total_requests`, which is the brief's definition of
-   `loss_ratio`. As written the two features are the same number and one is dead
-   weight. Either drop one (down to 7 features) or define them distinctly. Feature
-   order goes in the model card, so this must be settled first. Marked with a
-   `NOTE` in `features.py`.
+1. ~~**`loss_ratio` vs `fail_ratio` are identical as specified.**~~ **Closed
+   2026-09-06.** Dropped `loss_ratio`, down to 7 features, keeping `fail_ratio`.
+   Two identical columns give a tree model nothing and split feature importance
+   between duplicates, understating how much loss matters; and no honest
+   packet-loss proxy can be derived from `LinkSample`'s fields, so a removal is
+   easier to defend than a fabricated derivation. This was a C1-owner call, not
+   a team decision: the shared contract owns `LinkEstimate.loss_ratio` as a
+   reported field, not the internal feature vector. Model retrained as
+   `v2-synthetic-7f`. Reasoning recorded in `features.py`, not deleted.
 
 2. **The netem profiles may make classification trivially easy.** M3's testbed
    defines HIGH as 50 Mbit / 15 ms / 0.01% loss and LOW as 512 kbit / 250 ms / 3%

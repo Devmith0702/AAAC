@@ -17,7 +17,9 @@ dependencies = [
     "httpx",
     "redis>=5",
     "pydantic>=2",
-    "lightgbm",
+    # Pinned exactly: the exported bundle is gitignored, so reproducing it
+    # from metrics.json + seed requires the same LightGBM build.
+    "lightgbm==4.7.0",
     "scikit-learn",
     "joblib",
     "pandas",

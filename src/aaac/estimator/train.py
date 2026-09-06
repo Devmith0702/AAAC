@@ -48,7 +48,7 @@ from .features import FEATURE_NAMES
 from .synthdata import generate
 
 MODEL_PATH = Path("models/link_classifier.joblib")
-MODEL_VERSION = "v1-synthetic"
+MODEL_VERSION = "v2-synthetic-7f"
 
 CLASS_NAMES = [AccessClass(i).name for i in range(3)]
 
@@ -203,7 +203,7 @@ def train(n: int = 12000, seed: int = 1) -> dict:
         "metrics": {"argmax": argmax_metrics, "cost_sensitive": cost_metrics},
     }
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(bundle, MODEL_PATH, compress=3)
+    joblib.dump(bundle, MODEL_PATH, compress=6)
     size_kb = MODEL_PATH.stat().st_size / 1024
     print(f"\nsaved {MODEL_PATH}  ({size_kb:.1f} KB, target < 200 KB)")
     if size_kb > 200:

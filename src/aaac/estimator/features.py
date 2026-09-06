@@ -26,7 +26,6 @@ FEATURE_NAMES: tuple[str, ...] = (
     "rtt_mean_ms",
     "rtt_p95_ms",
     "rtt_jitter_ms",
-    "loss_ratio",
     "fail_ratio",
     "stability",
     "n_rtt_samples",
@@ -98,15 +97,22 @@ def extract_features(sample: LinkSample) -> np.ndarray:
     total = max(sample.total_requests, 1)
     fail_ratio = sample.failed_requests / total
 
-    # NOTE / OPEN QUESTION FOR THE TEAM:
-    # The brief lists loss_ratio and fail_ratio as separate features, but
-    # LinkSample only carries failed_requests / total_requests, which is the
-    # definition given for loss_ratio in probe.py. As written the two features
-    # are identical and one is redundant. Options: (a) drop one and move to 7
-    # features, (b) define loss_ratio as a probe-level packet-loss proxy
-    # distinct from request-level failures. Resolve before training the model
-    # that ships -- do not leave this ambiguous in the model card.
-    loss_ratio = fail_ratio
+    # DECISION (2026-09-06, C1 owner) -- open question 1, resolved.
+    # The vector carries fail_ratio only; loss_ratio was dropped, taking the
+    # feature count from 8 to 7.
+    #
+    # The brief listed loss_ratio and fail_ratio as separate features, but
+    # LinkSample carries only failed_requests / total_requests, which is the
+    # brief's own definition of loss_ratio -- so the two columns held the same
+    # number. Two identical columns give a tree model nothing and split
+    # feature importance between duplicates, which understates how much loss
+    # actually matters. No honest packet-loss proxy can be derived from
+    # LinkSample's fields, and defending a removal is easier than defending a
+    # fabricated derivation.
+    #
+    # This does NOT touch LinkEstimate.loss_ratio (section 3.6), which is a
+    # reported field and is still populated by infer.py from the same ratio.
+    # The shared contract is unaffected; this is the internal feature vector.
 
     return np.array(
         [
@@ -114,7 +120,6 @@ def extract_features(sample: LinkSample) -> np.ndarray:
             rtt_mean,
             rtt_p95,
             rtt_jitter,
-            loss_ratio,
             fail_ratio,
             stability(rtts),
             float(n),
