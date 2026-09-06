@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Examination Result — {{ r.index_no }}</title>
+<style>
+body{font-family:sans-serif;margin:1em;color:#111;line-height:1.4}
+h1{font-size:1.2em;margin:0 0 .2em}
+table{border-collapse:collapse;width:100%;margin-top:.6em}
+th,td{border:1px solid #999;padding:.3em .5em;text-align:left}
+th{background:#eee}
+dt{font-weight:bold;float:left;width:9em;clear:left}
+</style>
+</head>
+<body>
+<h1>Examination Result</h1>
+<p>{{ r.exam }} — {{ r.year }}</p>
+
+<dl>
+<dt>Index number</dt><dd>{{ r.index_no }}</dd>
+<dt>Name</dt><dd>{{ r.name }}</dd>
+<dt>Centre</dt><dd>{{ r.centre }}</dd>
+</dl>
+
+<table>
+<caption>Subject results</caption>
+<tr><th>Subject</th><th>Grade</th></tr>
+{% for s in r.subjects -%}
+<tr><td>{{ s.subject }}</td><td>{{ s.grade }}</td></tr>
+{% endfor -%}
+</table>
+
+<p>Result: <strong>{{ r.outcome }}</strong> &middot; Z-score {{ r.z_score }}</p>
+<p>Issued {{ r.issued }}. This is the complete result record.</p>
+</body>
+</html>

@@ -381,6 +381,28 @@ Hard requirements:
   we can serve the information alone.* The ratio test is a regression guard
   against `essential` creeping upward, not the headline result.
 - Accurate `Content-Length` on every response — M3 computes goodput from it.
+  With sub-resources this means goodput is the **sum** across the document and
+  every sub-resource it pulls, not the document's header alone.
+- **Disclosure requirement.** `full` and `reduced` use a realistic sub-resource
+  structure. Part of their cost on high-RTT links is round trips rather than
+  bytes. This is deliberate — it is one of the two mechanisms payload adaptation
+  addresses — and must be stated explicitly in the evaluation write-up.
+
+  It cuts in our favour: sub-resources make `full` more expensive, which makes
+  baseline worse, which makes AAAC's improvement look larger. That is the
+  realistic structure and we stand by it, but it must be stated rather than left
+  for an examiner to discover.
+- **The font is discovered via `<link rel="preload">`, not via `@font-face`
+  alone, and this biases against us.** A real browser finds a font only after
+  parsing the CSS that declares it — HTML, then CSS, then font, three *serial*
+  round trips. `preload` collapses that into the parallel batch, so `full` is
+  slightly **cheaper** here than a naive real page would be. The simplification
+  therefore understates `full`'s cost rather than inflating it, which is the
+  safe direction. It is not adopted because it needs less machinery.
+- **Sub-resources are fetched in parallel, capped at 6**, as a browser does.
+  Sequential fetching would charge `full` five serial round trips instead of
+  about two — on a 250 ms link, ~750 ms of invented latency landing hardest on
+  LOW clients in `baseline` mode, the exact case whose failure flatters AAAC.
 - Variant comes **only** from the verified token's `var` field.
 
 Render from Jinja2 templates in `delivery/templates/`. Content from
