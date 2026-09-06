@@ -326,7 +326,25 @@ that makes them.
 
 1. the model file is missing or fails to load,
 2. fewer than `min_rtt_samples` RTT samples were collected,
-3. the top class probability is below `confidence_threshold`.
+3. the top class probability is below `confidence_threshold`,
+4. the loaded bundle fails validation — its `feature_names` have drifted from
+   `FEATURE_NAMES`, or it carries no `cost_matrix`.
+
+Condition 4 is not defensive boilerplate either; it is the worst failure mode
+available, because nothing raises. A bundle whose feature order has drifted is
+fed the right number of floats in the wrong positions and returns confident
+nonsense indefinitely. And the decision rule is part of the model: a bundle
+without its `cost_matrix` cannot be served, because substituting a default
+would silently apply a different policy than the one that was measured. **Do
+not simplify this back to three conditions.**
+
+`confidence` is the **top class probability** — how certain the model is about
+its read of the link. `access_class` is the policy decision layered on top, and
+the expected-cost rule may deliberately return a class other than argmax, so
+the two can disagree. Reporting the returned class's own probability instead
+would make a deliberate override look like uncertainty, and would break the
+comparability of `confidence` with `confidence_threshold`, which sit beside
+each other in §3.6.
 
 The acceptance test: delete `models/link_classifier.joblib`, run the whole `aaac`
 pipeline, and it must complete, degrading to baseline-like behaviour with
@@ -406,24 +424,36 @@ admitted, it belongs to M1. If it is about measuring the outcome, it belongs to 
 
 ## 5. Current state of the repository
 
-As of the last session:
+As of 2026-09-04, verified against the working tree:
 
-**Done, in `src/aaac/estimator/`:**
+**Done — `features.py`, `synthdata.py`, `train.py`:**
 
-- `features.py` — the eight features in fixed order, plus `RawSample` (a local
-  stand-in for `LinkSample`). Both training and inference call
-  `extract_features()`, which is what prevents train/serve skew.
+- `features.py` — `FEATURE_NAMES`, the eight features in fixed order, plus
+  `RawSample` (a local stand-in for `LinkSample`). Both training and inference
+  call `extract_features()`, which is what prevents train/serve skew. The
+  `loss_ratio == fail_ratio` duplication of open question 1 is live in the code
+  and carries a NOTE at the assignment.
 - `synthdata.py` — synthetic labelled generator. Simulates *behaviour* (a probe
   that took 1,100 ms, polls at 190/450/260 ms, two failures) and derives features
   from it, rather than fabricating feature values directly.
 - `train.py` — LightGBM training, cost-sensitive decision rule, metrics, joblib
   export to `models/link_classifier.joblib`.
 
-**Not started:** `infer.py`, the probe routine, delivery variants, the SDK, the
-dashboard, all tests.
+**Not started:** the probe routine, delivery variants, the SDK, the dashboard.
+`models/` does not exist in the repository — no classifier bundle has been
+exported here, so any code that loads one currently takes the fallback path by
+definition. A fallback test that passes against this tree may be passing for that
+trivial reason; make such a test build its own bundle.
 
-**Blocked:** `src/aaac/common/` does not exist. Thisaru has not pushed it. The SDK
-cannot be written until `schemas.py` and `classes.py` land.
+**`common/` is available, not blocked.** Thisaru (M1) has pushed
+`src/aaac/common/` to `origin/thisaru`: `classes.py`, `schemas.py`, `tokens.py`,
+`events.py`, `config.py`, with passing tests. The schemas match §3.6
+field-for-field. Branch naming is per-person, not per-package, so M1's code
+living on `thisaru` is correct and expected.
+
+Merging it also brings M1's in-progress `admission/store.py` and `window.py`.
+Those are M1's and are not to be edited here (§1.4). Merging is my call, not
+Claude's (§1.1).
 
 ### 5.1 Decisions already made — do not silently revisit these
 
@@ -472,10 +502,13 @@ reasoning go in `MODEL_CARD.md`.
    design safe when it isn't easy. Raise with M3 early, while the testbed is still
    being built.
 
-3. **Local stubs need removing.** `AccessClass` and `RawSample` are temporary
-   copies inside `estimator/`. Field names match M1's schema exactly so the swap
-   is a two-line import change. Delete them the day `common/` lands — do not let
-   them become permanent.
+3. ~~**Local stubs need removing.**~~ **Resolved 2026-09-04.** Both stand-ins
+   are gone: `RawSample` in `features.py` is now `LinkSample` from
+   `aaac.common.schemas`, and the local `AccessClass` in `synthdata.py` is now
+   `aaac.common.classes.AccessClass` (`train.py` imports it from there too).
+   The swap was verified behaviour-neutral: `models/metrics.json` from
+   `--n 12000 --seed 1` is byte-identical before and after. No stubs remain in
+   `estimator/`.
 
 ### 5.3 Build order
 
