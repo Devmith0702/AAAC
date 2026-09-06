@@ -405,6 +405,35 @@ Hard requirements:
   LOW clients in `baseline` mode, the exact case whose failure flatters AAAC.
 - Variant comes **only** from the verified token's `var` field.
 
+**Measured, 2026-09-07** (`sample_record()`, nine subjects, totals include
+sub-resources):
+
+| Variant | Document | Sub-resources | Total | Budget | Requests |
+|---|---|---|---|---|---|
+| `full` | 6,697 | 404,961 | **411,658** | 460,800 | 6 |
+| `reduced` | 4,972 | 0 | **4,972** | 61,440 | 1 |
+| `essential` | 1,912 | 0 | **1,912** | 6,144 | 1 |
+
+**Lead with this: 98.4% of `full`'s weight is its sub-resources.** That is the
+structural fact, it is insensitive to how we sized anything, and it explains
+*why* payload adaptation works rather than merely asserting that it does. The
+`full`/`essential` multiplier is 215×, but quote it only as a supporting detail
+and attach the caveat — we chose both endpoints, and it scales with how many
+subjects a record carries.
+
+**Payload adaptation is close to binary on the byte axis.** Because
+sub-resources dominate so completely, dropping them removes almost the entire
+cost, and there is little left for a third tier to remove. `reduced` → `essential`
+saves **3,060 bytes and zero round trips** — about **48 ms** on a 512 kbit link.
+
+This is a result, not a defect, and it was found by building the variants
+honestly and measuring them. **Do not raise `reduced`'s weight to manufacture a
+three-rung ladder.** The consequence is that the middle tier's value has to come
+from **window scaling**, not payload weight — and if it cannot be justified
+there, a two-tier design ("has sub-resources" / "does not") would capture nearly
+all of the benefit. Raised with M1 as a question, since `AccessClass` is in the
+shared contract and the downgrade policy is his.
+
 Render from Jinja2 templates in `delivery/templates/`. Content from
 `GET /origin/result?index=…`. On origin 503, return 503 and do not count it as a
 completion.

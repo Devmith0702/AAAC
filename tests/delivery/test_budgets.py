@@ -135,23 +135,111 @@ def test_full_does_reference_sub_resources():
 # --- content parity -------------------------------------------------------
 
 
-def test_every_variant_carries_the_same_information():
-    """`essential` drops presentation, never content (section 4.2).
+def _rendered_text(variant: str, record: dict) -> str:
+    """Rendered output as a reader sees it: entities resolved.
 
-    Compared against the unescaped text, not raw markup: a subject named
-    "Information & Communication Technology" is correctly rendered as
-    `&amp;`, and asserting on the raw HTML would fail on correct escaping.
+    A subject named "Information & Communication Technology" is correctly
+    escaped to `&amp;`, so asserting against raw markup fails on correct
+    behaviour. Compare text, not tags.
     """
     import html as html_mod
 
-    for variant in VARIANTS:
-        text = html_mod.unescape(render(variant, RECORD).decode("utf-8"))
-        assert RECORD["index_no"] in text
-        assert RECORD["name"] in text
-        assert RECORD["z_score"] in text
-        for s in RECORD["subjects"]:
-            assert s["subject"] in text, f"{variant} is missing {s['subject']}"
-            assert s["grade"] in text
+    return html_mod.unescape(render(variant, record).decode("utf-8"))
+
+
+def _subject_rows(variant: str, record: dict) -> set[tuple[str, ...]]:
+    """Every table row, as a tuple of its cell texts.
+
+    Structured extraction rather than substring search: it proves the subject
+    and its grade appear *together on one row*, which is the property that
+    actually matters. A page listing every subject and, separately, every
+    grade would satisfy a substring check and be useless to a student.
+    """
+    from html.parser import HTMLParser
+
+    class Rows(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.rows: list[list[str]] = []
+            self._cell: list[str] | None = None
+            self._buf: list[str] = []
+            self._in_cell = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self._cell = []
+            elif tag in ("td", "th") and self._cell is not None:
+                self._in_cell, self._buf = True, []
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self._in_cell and self._cell is not None:
+                self._cell.append("".join(self._buf).strip())
+                self._in_cell = False
+            elif tag == "tr" and self._cell:
+                self.rows.append(self._cell)
+                self._cell = None
+
+        def handle_data(self, data):
+            if self._in_cell:
+                self._buf.append(data)
+
+    p = Rows()
+    p.feed(render(variant, record).decode("utf-8"))
+    p.close()
+    return {tuple(r) for r in p.rows}
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_every_variant_renders_every_field(variant):
+    """Every scalar in the record reaches the page -- proved by substitution.
+
+    Each field is rendered with a unique sentinel and the sentinel is looked
+    for. A plain substring check cannot do this job: the district "Kandy" also
+    occurs inside the centre "Central College, Kandy", and a grade of "A"
+    occurs in almost any HTML, so both would pass whether or not the field was
+    ever rendered. Those are tests that cannot fail, which is worse than no
+    test at all.
+    """
+    scalars = [k for k, v in RECORD.items() if not isinstance(v, (list, bool))]
+    for field_name in scalars:
+        sentinel = f"ZQX{field_name.upper()}SENTINEL"
+        record = dict(RECORD)
+        record[field_name] = sentinel
+        text = _rendered_text(variant, record)
+        assert sentinel in text, f"{variant} never renders {field_name!r}"
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_every_variant_renders_every_subject_row(variant):
+    """Subject, medium and grade appear together, on the same row."""
+    rows = _subject_rows(variant, RECORD)
+    for s in RECORD["subjects"]:
+        assert any(
+            s["subject"] in r and s["medium"] in r and s["grade"] in r for r in rows
+        ), f"{variant} has no row pairing {s['subject']} with {s['grade']}"
+
+
+def test_essential_carries_the_same_information_as_full():
+    """`essential` drops presentation, never content (section 4.2).
+
+    This is the claim that justifies serving 1.5 KB to a struggling client
+    instead of 400 KB. If `essential` quietly omitted the island rank, we would
+    be shipping a worse result to exactly the students the project exists to
+    serve.
+    """
+    assert _subject_rows("essential", RECORD) == _subject_rows("full", RECORD)
+
+    essential = _rendered_text("essential", RECORD)
+    for field_name, value in RECORD.items():
+        if isinstance(value, (list, bool)):
+            continue
+        sentinel = f"ZQX{field_name.upper()}SENTINEL"
+        record = dict(RECORD)
+        record[field_name] = sentinel
+        assert sentinel in _rendered_text("essential", record), (
+            f"essential omits {field_name!r}, which `full` renders"
+        )
+    assert essential  # rendered non-empty
 
 
 # --- SDK / budget cross-check ---------------------------------------------

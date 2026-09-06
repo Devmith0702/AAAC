@@ -5,12 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Examination Result — {{ r.index_no }}</title>
 <style>
+/* Inline, tiny, and referencing nothing. `essential` must be ONE request:
+   on a 250 ms link a second round trip costs more than the bytes it saves. */
 body{font-family:sans-serif;margin:1em;color:#111;line-height:1.4}
 h1{font-size:1.2em;margin:0 0 .2em}
 table{border-collapse:collapse;width:100%;margin-top:.6em}
 th,td{border:1px solid #999;padding:.3em .5em;text-align:left}
 th{background:#eee}
 dt{font-weight:bold;float:left;width:9em;clear:left}
+dd{margin:0 0 .15em 9em}
 </style>
 </head>
 <body>
@@ -21,17 +24,25 @@ dt{font-weight:bold;float:left;width:9em;clear:left}
 <dt>Index number</dt><dd>{{ r.index_no }}</dd>
 <dt>Name</dt><dd>{{ r.name }}</dd>
 <dt>Centre</dt><dd>{{ r.centre }}</dd>
+<dt>District</dt><dd>{{ r.district }}</dd>
 </dl>
 
 <table>
 <caption>Subject results</caption>
-<tr><th>Subject</th><th>Grade</th></tr>
+<tr><th>Subject</th><th>Medium</th><th>Grade</th></tr>
 {% for s in r.subjects -%}
-<tr><td>{{ s.subject }}</td><td>{{ s.grade }}</td></tr>
+<tr><td>{{ s.subject }}</td><td>{{ s.medium }}</td><td>{{ s.grade }}</td></tr>
 {% endfor -%}
 </table>
 
-<p>Result: <strong>{{ r.outcome }}</strong> &middot; Z-score {{ r.z_score }}</p>
-<p>Issued {{ r.issued }}. This is the complete result record.</p>
+<dl>
+<dt>Z-score</dt><dd>{{ r.z_score }}</dd>
+<dt>District rank</dt><dd>{{ r.district_rank }}</dd>
+<dt>Island rank</dt><dd>{{ r.island_rank }}</dd>
+<dt>Outcome</dt><dd>{{ r.outcome }}</dd>
+</dl>
+
+<p>Issued {{ r.issued }}. Reference {{ r.reference }}.</p>
+<p>This is the complete result record.</p>
 </body>
 </html>
