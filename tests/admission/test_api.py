@@ -200,6 +200,93 @@ async def test_estimate_rejected_on_requeued_ticket():
 
 
 @pytest.mark.asyncio
+async def test_i2_real_downgrade_then_upgrade_attempt_rejected():
+    """
+    The real I2 case: HIGH classified on attempt=1, timeout causes HIGH→MEDIUM
+    downgrade, then a fresh HIGH estimate on attempt=2 must be rejected.
+
+    This is the specific scenario the guard exists for. A ticket that earned its
+    downgrade by timing out must not be able to claw back a better class by
+    re-submitting an estimate on the next attempt.
+
+    Distinct from test_estimate_rejected_on_requeued_ticket which uses a manual
+    attempt bump. This test goes through a real timeout cycle so the downgrade
+    path (handle_timeout → reinsert with new_class) is exercised.
+    """
+    from aaac.admission.requeue import handle_timeout
+    import time as _time
+
+    store = api.store
+    cfg = api.cfg
+
+    http = TestClient(app, raise_server_exceptions=True)
+
+    # Step 1: join and establish HIGH on attempt=1
+    res = http.post("/queue/join", json={"client_id": "c1", "true_class": 0})
+    assert res.status_code == 200
+    tid = res.json()["ticket_id"]
+
+    est_res = http.post("/queue/estimate", json={
+        "ticket_id": tid,
+        "throughput_kbps": 5000.0,
+        "rtt_mean_ms": 10.0,
+        "rtt_jitter_ms": 1.0,
+        "loss_ratio": 0.0,
+        "stability": 1.0,
+        "access_class": 0,   # HIGH — establishing measurement on attempt=1
+        "confidence": 0.99,
+        "model_version": "v1",
+        "fallback": False,
+    })
+    assert est_res.json()["accepted"] is True
+    ticket = await store.get_ticket(tid)
+    assert ticket.access_class == AccessClass.HIGH, "should be HIGH after first estimate"
+
+    # Step 2: admit then expire so handle_timeout sees it in inflight
+    windows = {cls: 0.001 for cls in AccessClass}
+    await store.admit_n(1, _time.time(), windows)
+    await store.expire_inflight(_time.time() + 10)
+
+    # Step 3: timeout — this downgrades HIGH→MEDIUM and sets attempt=2
+    await handle_timeout(tid, store, api.logger, cfg)
+    ticket = await store.get_ticket(tid)
+    assert ticket.attempt == 2
+    assert int(ticket.access_class) > int(AccessClass.HIGH), (
+        "timeout should have downgraded from HIGH"
+    )
+    downgraded_class = ticket.access_class
+
+    # Step 4: re-queued ticket is WAITING again — submit a HIGH estimate
+    ticket = await store.get_ticket(tid)
+    assert ticket.state == "WAITING"
+
+    est2_res = http.post("/queue/estimate", json={
+        "ticket_id": tid,
+        "throughput_kbps": 5000.0,
+        "rtt_mean_ms": 10.0,
+        "rtt_jitter_ms": 1.0,
+        "loss_ratio": 0.0,
+        "stability": 1.0,
+        "access_class": 0,   # HIGH — attempting to reclaim downgrade on attempt=2
+        "confidence": 0.99,
+        "model_version": "v1",
+        "fallback": False,
+    })
+    assert est2_res.json()["accepted"] is False, (
+        "HIGH estimate on attempt=2 must be rejected — ticket earned its downgrade "
+        "by timing out; this is the I2 case guard 1 exists for"
+    )
+
+    # Class must not have changed from the downgraded value
+    ticket = await store.get_ticket(tid)
+    assert ticket.access_class == downgraded_class, (
+        f"class must remain {downgraded_class!r} after rejected attempt=2 estimate"
+    )
+
+
+
+
+@pytest.mark.asyncio
 async def test_estimate_accepted_when_upgrading_from_medium_default():
     """
     Guard 2 was removed: a HIGH estimate on attempt=1 must now be ACCEPTED.

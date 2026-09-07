@@ -222,12 +222,27 @@ async def queue_estimate(est: LinkEstimate):
     if ticket.state != "WAITING":
         return {"accepted": False, "access_class": None}
 
-    # D2: Reject estimates on re-queued tickets (attempt > 1).
-    # The WAITING check alone does NOT close the I2 upgrade hole — a re-queued
-    # ticket is WAITING again on attempt 2, so a fresh HIGH estimate would
-    # silently upgrade MEDIUM back to HIGH (I2 violation).
+    # D2 GUARD — only one check here; read before changing.
+    #
+    # What guard 1 (attempt > 1) closes:
+    #   A client that timed out is re-queued with a downgraded class (e.g. HIGH→MEDIUM).
+    #   That re-queued ticket is WAITING again, so the WAITING-state check above does
+    #   NOT block a fresh estimate. Without this guard, the client could re-submit a
+    #   HIGH estimate on attempt 2 and silently undo the downgrade it earned. That is
+    #   the I2 violation this guard exists for.
+    #
+    # Why there is NO guard 2 (rejecting int(est.class) < int(ticket.class)):
+    #   MEDIUM at join is the §0.3 default — an *absence of classification*, not a
+    #   prior measurement. int(HIGH=0) < int(MEDIUM=1) would make every HIGH estimate
+    #   on attempt 1 look like an upgrade and reject it. No client could ever be
+    #   classified HIGH. I2 is "access class never upgrades after a downgrade"; the
+    #   first estimate is not a downgrade reversal, it is the establishing measurement.
+    #   Monotonicity runs from the first established class onward, not from the join
+    #   placeholder. Guard 2 was added and then removed after it broke Δ with no error.
+    #   Do not re-add it.
     if ticket.attempt > 1:
         return {"accepted": False, "access_class": int(ticket.access_class)}
+
 
     await logger.log(
         "ESTIMATE",
