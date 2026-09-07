@@ -86,7 +86,20 @@ _NONE_MODE_WINDOW_S = 3600.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, logger, controller
+    global store, logger, controller, cfg
+
+    # Per-run run_id: AAAC_RUN_ID env var takes full control; if absent, append a
+    # unix timestamp to make every restart unique. run_id was config-fixed at r07,
+    # so restarts appended to one file with interleaved events — unique IDs from
+    # finding 2 fixed collisions but not interleaving. A per-run id gives M3 a
+    # clean file per run that never needs filtering.
+    effective_run_id = os.environ.get(
+        "AAAC_RUN_ID",
+        f"{cfg.run_id}-{int(time.time())}"
+    )
+    import dataclasses
+    cfg = dataclasses.replace(cfg, run_id=effective_run_id)
+    log.info("Run ID: %s", effective_run_id)
 
     redis_url = os.environ.get("AAAC_REDIS_URL", "")
     if redis_url:
@@ -99,10 +112,10 @@ async def lifespan(app: FastAPI):
         log.info("Using InMemoryQueueStore (set AAAC_REDIS_URL for Redis)")
 
     logger = EventLogger(cfg.run_id, cfg.mode)
-    # origin_url is read from env so the harness can point to its own origin stub
     origin_url = os.environ.get("AAAC_ORIGIN_URL", "http://origin:8002")
     controller = AdmissionController(store, logger, cfg, origin_url=origin_url)
     await controller.start()
+
 
     yield
 
