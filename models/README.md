@@ -29,11 +29,11 @@ model, and do not update `metrics.json` to make the mismatch go away.
 
 | | |
 |---|---|
-| `model_version` | `v3-synthetic-7f-ranges` |
+| `model_version` | `v4-synthetic-7f-failures` |
 | Features | 7, in `FEATURE_NAMES` order (see `src/aaac/estimator/features.py`) |
 | Training data | synthetic, `n=12000`, `seed=1` |
-| Size | 189.7 KB (target < 200 KB) |
-| Inference | 0.361 ms/call median (target < 2 ms) |
+| Size | 190.9 KB (target < 200 KB) |
+| Inference | 0.317 ms/call (target < 2 ms) |
 
 Built with:
 
@@ -47,6 +47,13 @@ Built with:
 
 ## Version history
 
+- **`v4-synthetic-7f-failures`** — the generator now models probe failure:
+  zero-byte probes (~1.6%), partial/stalled transfers (~4.8%), and polls that
+  hang without returning a timing sample. Degenerate (untimeable) probes are
+  deliberately **not** generated — see the block comment in `synthdata.py`.
+  Measured total fallback rate on the test split: **6.00%** (5.93% low
+  confidence, 0.07% outside support). Zero-byte probes classify LOW=57,
+  MEDIUM=13, **HIGH=0**.
 - **`v3-synthetic-7f-ranges`** — identical model, but the bundle now carries
   `feature_ranges`: the per-feature min/max of the training split. `infer.py`
   uses them for fallback condition 5 (input outside training support) and

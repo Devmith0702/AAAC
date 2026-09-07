@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -46,6 +48,55 @@ MEDIA_TYPES = {
     ".txt": "text/plain; charset=utf-8",
 }
 
+#: Bytes the probe pool holds. Requests are served as a random window of it, so
+#: every response differs while nothing is generated per request.
+PROBE_POOL_BYTES = 4 * 1024 * 1024
+
+MAX_PROBE_BYTES = 8 * 1024 * 1024
+
+
+class _Asset(NamedTuple):
+    body: bytes
+    media_type: str
+    etag: str
+
+
+def _load_assets() -> dict[str, _Asset]:
+    """Read every sub-resource once, at import, and precompute its ETag.
+
+    WHY THIS MATTERS FOR THE EXPERIMENT, not just for tidiness.
+
+    Serving `full` costs five static hits per client. Reading and hashing them
+    per request measured 0.455 ms each, ~2.3 ms of CPU per client, or roughly
+    46 seconds of single-core time across a 20,000-client run. The origin has
+    concurrency_limit 64; this service has no limit at all. If the delivery
+    service saturates before the origin does, congestion collapse appears in
+    the wrong component and the evaluation measures the wrong thing.
+    """
+    assets: dict[str, _Asset] = {}
+    if not STATIC_DIR.is_dir():
+        return assets
+    for path in sorted(STATIC_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        body = path.read_bytes()
+        assets[path.name] = _Asset(
+            body=body,
+            media_type=MEDIA_TYPES.get(
+                path.suffix.lower(), "application/octet-stream"
+            ),
+            etag='"' + hashlib.sha256(body).hexdigest()[:16] + '"',
+        )
+    return assets
+
+
+ASSETS: dict[str, _Asset] = _load_assets()
+
+#: Allocated once. Never regenerated: entropy is drawn at startup and reused
+#: through a moving window, which keeps responses distinct without paying for
+#: randomness on the request path.
+_PROBE_POOL = os.urandom(PROBE_POOL_BYTES)
+
 
 @app.get("/probe/{n_bytes}")
 async def probe(n_bytes: int) -> Response:
@@ -55,9 +106,19 @@ async def probe(n_bytes: int) -> Response:
     throughput. `no-store` so a second probe measures the link again rather
     than a cache hit.
     """
-    if n_bytes < 0 or n_bytes > 8 * 1024 * 1024:
+    if n_bytes < 0 or n_bytes > MAX_PROBE_BYTES:
         raise HTTPException(status_code=400, detail="n_bytes out of range")
-    body = os.urandom(n_bytes)
+
+    # A random window of the pool. Distinct bytes per request, so a
+    # content-addressing proxy cannot dedupe the probe and answer it locally --
+    # that would make the probe measure the middlebox instead of the link, and
+    # the probe is the measurement all of C1 rests on. no-store covers
+    # compliant caches; this covers the rest.
+    if n_bytes <= PROBE_POOL_BYTES:
+        start = secrets.randbelow(PROBE_POOL_BYTES - n_bytes + 1)
+        body = _PROBE_POOL[start : start + n_bytes]
+    else:
+        body = os.urandom(n_bytes)
     return Response(
         content=body,
         media_type="application/octet-stream",
@@ -75,22 +136,19 @@ async def static(asset: str) -> Response:
     M3 computes goodput from Content-Length, and with sub-resources that means
     summing across every response a page pulls -- so each one has to be right.
     """
-    if "/" in asset or "\\" in asset or asset.startswith("."):
-        raise HTTPException(status_code=404, detail="not found")
-    path = (STATIC_DIR / asset).resolve()
-    if not path.is_file() or STATIC_DIR.resolve() not in path.parents:
+    entry = ASSETS.get(asset)
+    if entry is None:
         raise HTTPException(status_code=404, detail="not found")
 
-    body = path.read_bytes()
     return Response(
-        content=body,
-        media_type=MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        content=entry.body,
+        media_type=entry.media_type,
         headers={
-            "Content-Length": str(len(body)),
+            "Content-Length": str(len(entry.body)),
             # Assets are immutable and content-addressed by name; a real portal
             # caches them hard. The document itself is never cached.
             "Cache-Control": "public, max-age=31536000, immutable",
-            "ETag": '"' + hashlib.sha256(body).hexdigest()[:16] + '"',
+            "ETag": entry.etag,
         },
     )
 

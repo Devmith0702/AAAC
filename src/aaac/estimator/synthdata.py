@@ -113,6 +113,62 @@ SHORT_OBSERVATION_FRAC = 0.12
 # first time in production.
 MIXED_CHARACTER_FRAC = 0.30
 
+# --- probe failure --------------------------------------------------------
+#
+# Added after the harness met a real network. The generator previously produced
+# only *slow* probes, never *failed* ones: throughput was floored at 30 kbps and
+# every probe returned its full 64 KB. Reality does not work that way, and the
+# consequence was a measurement gap rather than a modelling nicety.
+#
+# Fallback condition 5 (input outside training support) fired on 0.10% of
+# synthetic test rows and on the very FIRST run against real services. So the
+# fallback rate -- which decides whether the classifier does any work at all
+# during evaluation -- was not measurable from synthetic data. If it turns out
+# high, Delta is measured over a mostly-unclassified population and the headline
+# result describes the fallback path rather than C1.
+#
+# These fractions are conditional on class, because failure is not uniform: a
+# 3%-loss rural cell drops probes, urban fibre does not.
+
+#: Probe returns some bytes and then stalls. Reported as the low throughput it
+#: really is (client/probe.py) -- a signal, not an absence.
+PROBE_STALL_FRAC = {AccessClass.HIGH: 0.005, AccessClass.MEDIUM: 0.03,
+                    AccessClass.LOW: 0.09}
+
+#: Probe returns nothing at all: reset, timeout, refused. There is no
+#: bytes/duration pair that expresses this, so probe_bytes is 0 and the failure
+#: is carried by failed_requests.
+PROBE_ZERO_FRAC = {AccessClass.HIGH: 0.002, AccessClass.MEDIUM: 0.012,
+                   AccessClass.LOW: 0.04}
+
+# DEGENERATE PROBES ARE DELIBERATELY *NOT* GENERATED. Do not add them.
+#
+# A first version of this change did model them, as a HIGH-class behaviour --
+# plausible, since only a fast link delivers 64 KB in a single read. Retraining
+# showed why it is wrong: it moved the top of log10_throughput support from
+# 5.905 to 8.7196, exactly the loopback value. Condition 5 stopped catching the
+# degenerate case, and the model instead learned "untimeable probe -> HIGH",
+# which is precisely the optimistic error the whole component exists to prevent.
+#
+# The distinction that matters:
+#
+#   a FAILED probe    is a signal ABOUT THE LINK      -> model it, learn from it
+#   a DEGENERATE probe is an ABSENCE OF MEASUREMENT   -> abstain, never infer
+#
+# Teaching a model to infer bandwidth from a failure to measure bandwidth is
+# circular, and the harness proved the inference can be flatly wrong: loopback
+# is not a "fast link" in any sense that matters to a student. Leaving
+# degeneracy outside support is what makes classify() fall back to MEDIUM,
+# which is the cheap direction.
+
+#: A poll that never returns contributes no RTT sample but does count as a
+#: failed request, so a bad link can end up with few samples AND a high
+#: fail_ratio -- the combination the confidence threshold has to cope with.
+POLL_STALL_EXTRA = {AccessClass.HIGH: 0.0, AccessClass.MEDIUM: 0.01,
+                    AccessClass.LOW: 0.05}
+
+
+
 
 def _simulate_sample(
     rng: np.random.Generator,
@@ -147,6 +203,26 @@ def _simulate_sample(
     if rng.random() < p.base_fail_rate * 4:
         probe_duration_ms *= float(rng.uniform(1.5, 4.0))
 
+    # --- probe failure modes, as the live client would report them ------
+    probe_bytes = PROBE_BYTES
+    probe_failed = False
+    roll = rng.random()
+
+    if roll < PROBE_ZERO_FRAC[cls]:
+        # Nothing arrived. The client reports 0 bytes honestly rather than
+        # inventing a pair, so this lands just below training support.
+        probe_bytes = 0
+        probe_duration_ms = 0.0
+        probe_failed = True
+    elif roll < PROBE_ZERO_FRAC[cls] + PROBE_STALL_FRAC[cls]:
+        # Part of the payload arrived, then the transfer died. The client
+        # reports bytes_received over the time they took.
+        fraction = float(rng.uniform(0.05, 0.6))
+        probe_bytes = max(1, int(PROBE_BYTES * fraction))
+        probe_duration_ms *= fraction * float(rng.uniform(1.2, 3.0))
+        probe_failed = True
+
+
     # --- RTT: timing of the ordinary /queue/status polls -----------------
     n_polls = int(max(2, rng.poisson(p.poll_count_mean)))
     if rng.random() < SHORT_OBSERVATION_FRAC:
@@ -166,13 +242,20 @@ def _simulate_sample(
     total_requests = n_polls + 1                       # polls plus the probe
     failed_requests = int(rng.binomial(total_requests, fail_rate))
 
+    # Polls that hang: no timing sample, but still a counted failure. This is
+    # how a bad link ends up with few RTT samples AND a high fail_ratio.
+    stalled_polls = int(rng.binomial(n_polls, POLL_STALL_EXTRA[cls]))
+    failed_requests = min(total_requests, failed_requests + stalled_polls)
+    if probe_failed:
+        failed_requests = min(total_requests, failed_requests + 1)
+
     # A failed poll produces no timing sample.
     kept = max(2, n_polls - failed_requests)
     rtt_samples = [float(x) for x in rtts[:kept]]
 
     return LinkSample(
         ticket_id=ticket_id,
-        probe_bytes=PROBE_BYTES,
+        probe_bytes=probe_bytes,
         probe_duration_ms=float(probe_duration_ms),
         rtt_samples_ms=rtt_samples,
         failed_requests=failed_requests,

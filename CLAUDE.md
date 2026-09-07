@@ -671,6 +671,34 @@ contract change:
 **Report classifier accuracy over the classified subset only, and report the
 never-classified fraction beside it as its own number.** Do not blend them.
 
+**A failed probe is signal; a degenerate probe is not. Do not model the second.**
+
+`synthdata.py` now generates probe failures — zero-byte probes, partial
+transfers, hanging polls — because the generator previously produced only *slow*
+probes and never *failed* ones, which left the fallback rate unmeasurable.
+Measured on the test split for `v4-synthetic-7f-failures`: **6.00% total
+fallback** (5.93% low confidence, 0.07% outside support). Zero-byte probes
+classify **LOW=57, MEDIUM=13, HIGH=0** — no optimistic errors on the population
+that matters most.
+
+A first version also modelled *degenerate* probes — completing too fast to
+time — as a HIGH-class behaviour. Retraining showed why that is wrong: it moved
+the top of `log10_throughput` support from 5.905 to **8.7196**, exactly the
+loopback value, so condition 5 stopped catching the degenerate case and the
+model instead learned *"untimeable probe → HIGH"*. That is the optimistic error
+the component exists to prevent, reintroduced through the training data.
+
+The distinction is general and belongs in the write-up:
+
+| | |
+|---|---|
+| A **failed** probe | a signal *about the link* — model it, learn from it |
+| A **degenerate** probe | an *absence of measurement* — abstain, never infer |
+
+Teaching a model to infer bandwidth from a failure to measure bandwidth is
+circular, and the harness proved the inference can be flatly wrong: loopback is
+not a "fast link" in any sense that matters to a student.
+
 ### 5.2 Open questions — resolve before the shipping model is trained
 
 1. ~~**`loss_ratio` vs `fail_ratio` are identical as specified.**~~ **Closed

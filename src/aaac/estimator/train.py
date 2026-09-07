@@ -48,7 +48,7 @@ from .features import FEATURE_NAMES
 from .synthdata import generate
 
 MODEL_PATH = Path("models/link_classifier.joblib")
-MODEL_VERSION = "v3-synthetic-7f-ranges"
+MODEL_VERSION = "v4-synthetic-7f-failures"
 
 CLASS_NAMES = [AccessClass(i).name for i in range(3)]
 
