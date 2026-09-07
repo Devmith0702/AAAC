@@ -248,3 +248,91 @@ def test_exported_bundle_carries_ranges_for_every_feature():
     for name in FEATURE_NAMES:
         lo, hi = bundle["feature_ranges"][name]
         assert lo <= hi
+
+
+# --- the guard on the guard ------------------------------------------------
+#
+# Condition 5 compares against a boundary DERIVED FROM THE TRAINING DATA. That
+# makes the training data an unguarded surface: widening the generator's range
+# moves the boundary, and condition 5 weakens silently while continuing to pass
+# every test above.
+#
+# This nearly happened. Modelling degenerate probes as a HIGH-class behaviour
+# moved the top of log10_throughput support from 5.905 to 8.7196 -- exactly the
+# loopback value -- so the condition built to catch that case would have stopped
+# catching it, with nothing failing anywhere.
+#
+# A guard whose threshold comes from data needs its own guard on the data.
+
+#: 65,536 bytes over the client's 0.001 ms floor: what an untimeable transfer
+#: reports. log10(524,288,000 + 1) = 8.72.
+DEGENERATE_LOG10_THROUGHPUT = 8.7196
+
+#: Above any plausible shaped link (the testbed's fastest is 50 Mbit = 5e4 kbps)
+#: and far below the degenerate value, so it separates the two cleanly.
+MAX_SANE_LOG10_THROUGHPUT = 6.5
+
+
+def test_training_support_ceiling_stays_below_the_degenerate_value():
+    """If this fails, someone widened the generator and disabled condition 5.
+
+    The failure message matters more than the assertion: a future session that
+    trips this should learn WHY the ceiling is load-bearing, not just raise it.
+    """
+    from aaac.estimator.infer import load_bundle
+
+    bundle = load_bundle("models/link_classifier.joblib")
+    if bundle is None:
+        pytest.skip("no exported bundle on disk; run aaac.estimator.train")
+
+    lo, hi = bundle["feature_ranges"]["log10_throughput_kbps"]
+    assert hi < MAX_SANE_LOG10_THROUGHPUT, (
+        f"training support now reaches log10={hi:.4f}. An untimeable probe "
+        f"reports {DEGENERATE_LOG10_THROUGHPUT}, so a ceiling this high means "
+        f"fallback condition 5 no longer catches the degenerate case -- it will "
+        f"be classified instead, and on a HIGH-leaning boundary. Do not raise "
+        f"this limit; stop generating whatever widened the range. See the "
+        f"block comment in synthdata.py."
+    )
+    assert hi < DEGENERATE_LOG10_THROUGHPUT, "condition 5 is already disabled"
+    assert lo >= 0.0
+
+
+def test_the_degenerate_value_is_still_outside_support():
+    """Stated as the property itself, not as a proxy for it."""
+    from aaac.estimator.infer import load_bundle
+
+    bundle = load_bundle("models/link_classifier.joblib")
+    if bundle is None:
+        pytest.skip("no exported bundle on disk; run aaac.estimator.train")
+
+    features = np.zeros(len(FEATURE_NAMES), dtype=float)
+    for i, name in enumerate(FEATURE_NAMES):
+        lo, hi = bundle["feature_ranges"][name]
+        features[i] = (lo + hi) / 2.0          # everything else safely in range
+    features[0] = DEGENERATE_LOG10_THROUGHPUT
+
+    offenders = out_of_support(features, bundle["feature_ranges"])
+    assert any("throughput" in o for o in offenders), (
+        "an untimeable probe must remain outside training support"
+    )
+
+
+def test_generator_does_not_emit_degenerate_probes():
+    """The source of the boundary, checked directly.
+
+    The bundle test above catches the symptom after a retrain. This catches the
+    cause even if nobody has retrained yet.
+    """
+    from aaac.estimator.synthdata import generate
+
+    _, _, raw = generate(n=4000, seed=1)
+    degenerate = [
+        r for r in raw if r.probe_bytes > 0 and r.probe_duration_ms < 1.0
+    ]
+    assert degenerate == [], (
+        f"{len(degenerate)} degenerate probes in the generator. A failed probe "
+        f"is a signal about the link and belongs in training; a degenerate one "
+        f"is an absence of measurement and must stay outside support so "
+        f"condition 5 catches it."
+    )

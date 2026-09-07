@@ -402,6 +402,14 @@ Hard requirements:
 - Accurate `Content-Length` on every response — M3 computes goodput from it.
   With sub-resources this means goodput is the **sum** across the document and
   every sub-resource it pulls, not the document's header alone.
+- **The probe payload is a random window of a pre-allocated pool, not a fixed
+  buffer, and not per-request entropy.** `Cache-Control: no-store` handles
+  compliant caches, but a byte-identical response is a *deduplication* target:
+  any content-addressing proxy or middlebox could recognise the repeat and serve
+  it locally, and the probe would then measure the middlebox rather than the
+  link. The probe is the single measurement all of C1 rests on. Serving a random
+  window keeps every response distinct at zero per-request cost. **Do not
+  "optimise" this into a fixed buffer.**
 - **Disclosure requirement.** `full` and `reduced` use a realistic sub-resource
   structure. Part of their cost on high-RTT links is round trips rather than
   bytes. This is deliberate — it is one of the two mechanisms payload adaptation
@@ -698,6 +706,27 @@ The distinction is general and belongs in the write-up:
 Teaching a model to infer bandwidth from a failure to measure bandwidth is
 circular, and the harness proved the inference can be flatly wrong: loopback is
 not a "fast link" in any sense that matters to a student.
+
+**And the deeper lesson, distinct from the clamp finding above: training data is
+an unguarded surface.**
+
+The clamp finding was about sanitising an input upstream of the check that
+validates it. This one is worse, because it does not touch the input path at
+all. Modelling degenerate probes moved the top of `log10_throughput` training
+support from 5.905 to **8.7196** — exactly the loopback value. Condition 5 would
+have continued to exist, continued to pass every one of its tests, and **never
+fired again**, because the boundary it compares against had quietly moved to
+enclose the very case it was built to catch.
+
+All five fallback conditions inspect *inputs at serve time*. **Nothing inspects
+whether the training data has moved the boundary those conditions depend on.**
+Widening the generator's range — for any reason, however well-motivated —
+weakens condition 5 silently and invisibly.
+
+This is guarded by a test now (`test_support.py`), not just a comment: the
+exported bundle's throughput ceiling must stay below the known degenerate value.
+If a future session widens the generator, that test fails and says why. **A
+guard whose threshold is derived from data needs its own guard on the data.**
 
 ### 5.2 Open questions — resolve before the shipping model is trained
 

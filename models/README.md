@@ -47,6 +47,25 @@ Built with:
 
 ## Version history
 
+### Reading the v2 -> v4 accuracy drop
+
+Cost-sensitive accuracy fell from **0.869 (v2)** to **0.802 (v4)**. **This is not
+a regression, and it must not be reported as one.**
+
+The generator now produces failure cases that reality produces — stalled
+probes, zero-byte probes, hanging polls — so the task itself became harder and
+more realistic. The v2 figure was measured on a population containing no failed
+probes at all, which is not a population that exists.
+
+The number that matters held: **optimistic errors 1.07%**, unchanged. And on the
+newly-modelled population the model behaves correctly — zero-byte probes classify
+**LOW=57, MEDIUM=13, HIGH=0**, no optimistic errors at all among clients whose
+probe failed outright.
+
+An accuracy figure is only comparable against the same distribution. Comparing
+v2's 0.869 to v4's 0.802 compares two different problems, and the harder one is
+the one that resembles a real release day.
+
 - **`v4-synthetic-7f-failures`** — the generator now models probe failure:
   zero-byte probes (~1.6%), partial/stalled transfers (~4.8%), and polls that
   hang without returning a timing sample. Degenerate (untimeable) probes are
