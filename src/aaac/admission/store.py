@@ -28,13 +28,14 @@ class QueueStore(Protocol):
     async def create_ticket(self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass, attempt: int, expires_at: float | None = None) -> None: ...
     async def get_ticket(self, tid: str) -> TicketData | None: ...
     async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]: ...
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None: ...
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None: ...
+    async def update_class(self, tid: str, new_class: AccessClass) -> None: ...
     async def position(self, tid: str) -> int: ...
     async def waiting_count(self) -> int: ...
     async def inflight_count(self) -> int: ...
     async def expire_inflight(self, now: float) -> list[str]: ...
     async def complete(self, tid: str, state: str) -> None: ...
-    async def snapshot(self) -> dict[str, Any]: ...
+    async def get_counters(self) -> dict[str, dict[str, int]]: ...
 
 ADMIT_N_LUA = """
 local run = KEYS[1]
@@ -63,6 +64,7 @@ for i = 1, #tickets, 2 do
         
         redis.call('HMSET', ticket_key, 'state', 'ADMITTED', 'expires_at', tostring(expires_at))
         redis.call('ZADD', inflight_key, expires_at, tid)
+        redis.call('HINCRBY', 'aaac:' .. run .. ':counters', 'waiting:' .. class_val, -1)
         
         table.insert(admitted, tid)
         table.insert(admitted, tostring(expires_at))
@@ -96,6 +98,7 @@ class RedisQueueStore:
         pipe = self.r.pipeline()
         pipe.hset(key, mapping=mapping)
         pipe.zadd(f"aaac:{self.run_id}:waiting", {tid: seq})
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{int(access_class)}", 1)
         await pipe.execute()
         
     async def get_ticket(self, tid: str) -> TicketData | None:
@@ -123,14 +126,45 @@ class RedisQueueStore:
             admitted.append((result[i].decode(), float(result[i+1].decode())))
         return admitted
         
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None:
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
         pipe = self.r.pipeline()
+        
+        # Get old class for timeout counter
+        old_class_bytes = await self.r.hget(key, "class")
+        old_class = int(old_class_bytes) if old_class_bytes else 0
+        
         if new_class is not None:
             pipe.hset(key, "class", str(int(new_class)))
+        if attempt is not None:
+            pipe.hset(key, "attempt", str(attempt))
+            
         pipe.hset(key, "state", "WAITING")
+        pipe.zrem(f"aaac:{self.run_id}:inflight", tid)
         pipe.zadd(f"aaac:{self.run_id}:waiting", {tid: score})
+        
+        # Reinsert implies timeout in this system
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"timed_out:{old_class}", 1)
+        
+        # Increment waiting for the new class
+        target_class = int(new_class) if new_class is not None else old_class
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{target_class}", 1)
+        
         await pipe.execute()
+        
+    async def update_class(self, tid: str, new_class: AccessClass) -> None:
+        key = f"aaac:{self.run_id}:ticket:{tid}"
+        pipe = self.r.pipeline()
+        old_class_bytes = await self.r.hget(key, "class")
+        
+        if old_class_bytes:
+            old_class = int(old_class_bytes)
+            new_cls = int(new_class)
+            if old_class != new_cls:
+                pipe.hset(key, "class", str(new_cls))
+                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{old_class}", -1)
+                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{new_cls}", 1)
+                await pipe.execute()
         
     async def position(self, tid: str) -> int:
         rank = await self.r.zrank(f"aaac:{self.run_id}:waiting", tid)
@@ -160,13 +194,27 @@ class RedisQueueStore:
         
     async def complete(self, tid: str, state: str) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
+        cls_bytes = await self.r.hget(key, "class")
+        cls_val = int(cls_bytes) if cls_bytes else 0
+        
         pipe = self.r.pipeline()
         pipe.hset(key, "state", state)
         pipe.zrem(f"aaac:{self.run_id}:inflight", tid)
+        if state == "COMPLETED":
+            pipe.hincrby(f"aaac:{self.run_id}:counters", f"completed:{cls_val}", 1)
         await pipe.execute()
         
-    async def snapshot(self) -> dict[str, Any]:
-        return {}
+    async def get_counters(self) -> dict[str, dict[str, int]]:
+        raw = await self.r.hgetall(f"aaac:{self.run_id}:counters")
+        res = {"waiting": {"0":0, "1":0, "2":0}, "completed": {"0":0, "1":0, "2":0}, "timed_out": {"0":0, "1":0, "2":0}}
+        for k_b, v_b in raw.items():
+            k = k_b.decode()
+            v = int(v_b)
+            if ":" in k:
+                cat, cls = k.split(":")
+                if cat in res:
+                    res[cat][cls] = v
+        return res
 
 class InMemoryQueueStore:
     def __init__(self, run_id: str):
@@ -175,6 +223,11 @@ class InMemoryQueueStore:
         self._tickets: dict[str, dict] = {}
         self._waiting: list[tuple[int, str]] = []  # simple sorted list
         self._inflight: list[tuple[float, str]] = []
+        self._counters = {
+            "waiting": {"0":0, "1":0, "2":0},
+            "completed": {"0":0, "1":0, "2":0},
+            "timed_out": {"0":0, "1":0, "2":0}
+        }
         self._lock = asyncio.Lock()
         
     async def next_seq(self) -> int:
@@ -194,6 +247,7 @@ class InMemoryQueueStore:
             }
             self._waiting.append((seq, tid))
             self._waiting.sort(key=lambda x: x[0])
+            self._counters["waiting"][str(int(access_class))] += 1
             
     async def get_ticket(self, tid: str) -> TicketData | None:
         async with self._lock:
@@ -220,17 +274,35 @@ class InMemoryQueueStore:
                 t["expires_at"] = exp
                 self._inflight.append((exp, tid))
                 admitted.append((tid, exp))
+                self._counters["waiting"][str(int(t["class"]))] -= 1
             self._inflight.sort(key=lambda x: x[0])
             return admitted
             
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None) -> None:
+    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
         async with self._lock:
             t = self._tickets[tid]
+            old_class = str(int(t["class"]))
             if new_class is not None:
                 t["class"] = new_class
+            if attempt is not None:
+                t["attempt"] = attempt
             t["state"] = "WAITING"
+            self._inflight = [(e, t_id) for e, t_id in self._inflight if t_id != tid]
             self._waiting.append((score, tid))
             self._waiting.sort(key=lambda x: x[0])
+            self._counters["timed_out"][old_class] += 1
+            self._counters["waiting"][str(int(t["class"]))] += 1
+            
+    async def update_class(self, tid: str, new_class: AccessClass) -> None:
+        async with self._lock:
+            t = self._tickets.get(tid)
+            if t:
+                old_cls = str(int(t["class"]))
+                new_cls = str(int(new_class))
+                if old_cls != new_cls:
+                    t["class"] = new_class
+                    self._counters["waiting"][old_cls] -= 1
+                    self._counters["waiting"][new_cls] += 1
             
     async def position(self, tid: str) -> int:
         async with self._lock:
@@ -263,7 +335,12 @@ class InMemoryQueueStore:
         async with self._lock:
             if tid in self._tickets:
                 self._tickets[tid]["state"] = state
+                if state == "COMPLETED":
+                    cls_val = str(int(self._tickets[tid]["class"]))
+                    self._counters["completed"][cls_val] += 1
             self._inflight = [(e, t) for e, t in self._inflight if t != tid]
             
-    async def snapshot(self) -> dict[str, Any]:
-        return {}
+    async def get_counters(self) -> dict[str, dict[str, int]]:
+        async with self._lock:
+            import copy
+            return copy.deepcopy(self._counters)
