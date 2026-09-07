@@ -54,7 +54,7 @@ async def _run(handler, **kw):
             index_no="1",
             admission_base="",
             delivery_base="",
-            min_rtt_samples=3,
+            min_rtt_samples=kw.pop("min_rtt_samples", 3),
             abandon_after_s=kw.pop("abandon_after_s", 20.0),
             admission_client=adm,
             delivery_client=dlv,
@@ -332,3 +332,148 @@ async def test_cancellation_propagates():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# --- 404 on status: a valid answer, not a malformed one -------------------
+
+
+def _joining_handler(status_response):
+    """A server that joins normally, then answers status with `status_response`."""
+    def handler(request):
+        if request.url.path == "/queue/join":
+            return httpx.Response(
+                200,
+                json={"ticket_id": "t-404", "join_seq": 1, "position": 1,
+                      "eta_s": 1.0, "poll_interval_ms": 1},
+            )
+        if request.url.path == "/queue/estimate":
+            return httpx.Response(200, json={"accepted": True, "access_class": 2})
+        return status_response()
+    return handler
+
+
+async def test_404_on_status_is_its_own_terminal_outcome():
+    """M1 returns 404 "Ticket not found" for a ticket it has no record of.
+
+    That is a definite, correct answer -- not infrastructure failure, and not a
+    malformed body. Before this, a 404 fell through to
+    TicketStatus.model_validate({"detail": ...}), raised ValidationError, and
+    after five polls reported ADMISSION_UNAVAILABLE: M1 blamed for answering
+    correctly.
+    """
+    out = await _run(
+        _joining_handler(lambda: httpx.Response(404, json={"detail": "Ticket not found"}))
+    )
+    assert out.outcome is Outcome.TICKET_UNKNOWN
+    assert out.outcome is not Outcome.ADMISSION_UNAVAILABLE
+    assert out.outcome is not Outcome.ABANDONED
+    assert out.outcome is not Outcome.EXPIRED
+    assert "404" in out.error
+    assert "Ticket not found" in out.error
+    assert out.ticket_id == "t-404"
+
+
+async def test_404_is_terminal_and_not_retried():
+    """Retrying cannot make a ticket reappear.
+
+    Exactly one status poll should be issued. Five more per affected client
+    would put noise into M1's own load measurements, caused by us.
+    """
+    polls = {"n": 0}
+
+    def status():
+        polls["n"] += 1
+        return httpx.Response(404, json={"detail": "Ticket not found"})
+
+    out = await _run(_joining_handler(status))
+    assert out.outcome is Outcome.TICKET_UNKNOWN
+    assert polls["n"] == 1, f"404 was retried {polls['n']} times"
+
+
+async def test_404_does_not_consume_the_consecutive_failure_budget():
+    """A 404 is not a failure, so it must not count toward the failure limit.
+
+    If it did, a 404 arriving after a couple of genuine blips would be reported
+    as ADMISSION_UNAVAILABLE rather than as the missing ticket it is.
+    """
+    state = {"polls": 0}
+
+    def status():
+        state["polls"] += 1
+        if state["polls"] <= 2:
+            return httpx.Response(500, text="blip")
+        return httpx.Response(404, json={"detail": "Ticket not found"})
+
+    out = await _run(_joining_handler(status))
+    assert out.outcome is Outcome.TICKET_UNKNOWN
+    assert out.outcome is not Outcome.ADMISSION_UNAVAILABLE
+
+
+async def test_malformed_body_is_still_distinct_from_404():
+    """The two must not collapse into each other in either direction."""
+    out = await _run(_joining_handler(lambda: httpx.Response(200, json={"state": "WOBBLE"})))
+    assert out.outcome is Outcome.ADMISSION_UNAVAILABLE
+    assert out.outcome is not Outcome.TICKET_UNKNOWN
+    assert "malformed" in out.error
+
+
+async def test_404_marks_never_classified_when_no_estimate_went_in():
+    """The client vanished before it could be classified; say so."""
+    out = await _run(
+        _joining_handler(lambda: httpx.Response(404, json={"detail": "gone"})),
+        min_rtt_samples=99,          # unreachable, so no estimate is submitted
+    )
+    assert out.outcome is Outcome.TICKET_UNKNOWN
+    assert out.estimate_submitted is False
+    assert out.never_classified is True
+
+
+# --- the run-level warning ------------------------------------------------
+
+
+def test_ticket_state_loss_warning_fires_and_is_impossible_to_skim(capsys):
+    """A per-client outcome buried in a table gets skimmed past; this must not.
+
+    Asserts the loud block, not just a count, because the requirement is
+    visibility rather than bookkeeping.
+    """
+    from aaac.client.harness import warn_ticket_state_loss
+    from aaac.client.sdk import ClientOutcome
+
+    outcomes = [
+        ClientOutcome(client_id="a", outcome=Outcome.COMPLETED),
+        ClientOutcome(client_id="b", outcome=Outcome.TICKET_UNKNOWN),
+        ClientOutcome(client_id="c", outcome=Outcome.TICKET_UNKNOWN),
+    ]
+    n = warn_ticket_state_loss(outcomes)
+    printed = capsys.readouterr().out
+
+    assert n == 2
+    assert "2 client(s)" in printed
+    assert "TICKET STATE LOSS MAY HAVE OCCURRED" in printed
+    assert "DO NOT TRUST" in printed
+    assert "!!!!" in printed, "the warning must be visually separated"
+
+
+def test_no_warning_when_no_tickets_went_missing(capsys):
+    """It must stay silent on a clean run, or it becomes noise to ignore."""
+    from aaac.client.harness import warn_ticket_state_loss
+    from aaac.client.sdk import ClientOutcome
+
+    n = warn_ticket_state_loss([
+        ClientOutcome(client_id="a", outcome=Outcome.COMPLETED),
+        ClientOutcome(client_id="b", outcome=Outcome.TIMED_OUT),
+    ])
+    assert n == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_warning_does_not_raise_or_change_control_flow():
+    """Deliberately not a raise: the run must still complete and report."""
+    from aaac.client.harness import warn_ticket_state_loss
+    from aaac.client.sdk import ClientOutcome
+
+    result = warn_ticket_state_loss(
+        [ClientOutcome(client_id="a", outcome=Outcome.TICKET_UNKNOWN)]
+    )
+    assert result == 1          # returns a count; raises nothing

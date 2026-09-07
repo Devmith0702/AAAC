@@ -86,6 +86,7 @@ class Outcome(str, Enum):
     ADMISSION_UNAVAILABLE = "ADMISSION_UNAVAILABLE"
     ORIGIN_UNAVAILABLE = "ORIGIN_UNAVAILABLE"
     COMPLETED_UNREPORTED = "COMPLETED_UNREPORTED"
+    TICKET_UNKNOWN = "TICKET_UNKNOWN"
 
 
 @dataclass
@@ -227,6 +228,32 @@ async def run_client(
             response, rtt_ms, ok = await timed_poll(adm, status_url)
             session.polls += 1
             session.observation.record_request(ok, rtt_ms if ok else None)
+
+            if response is not None and response.status_code == 404:
+                # A definite, correct answer: this ticket does not exist here.
+                # Terminal, and NOT a failure -- retrying cannot make a ticket
+                # reappear, and five more polls per affected client would put
+                # noise into M1's own load measurements.
+                #
+                # It gets its own outcome rather than reusing an existing one
+                # because each of those would claim something false:
+                # ADMISSION_UNAVAILABLE says the infrastructure is broken (it
+                # answered correctly and promptly); ABANDONED says the client
+                # gave up (it was told the ticket is gone); EXPIRED says M1
+                # reported state EXPIRED (here M1 has no record at all, and
+                # collapsing the two would hide whether tickets are being
+                # expired or LOST).
+                #
+                # Mid-run this most likely means ticket state loss: a restarted
+                # admission service on the in-memory store, Redis eviction, a
+                # run_id change, or a purge. Every one of those invalidates the
+                # run it appears in, so it must stay separately countable.
+                gate.mark_admitted_without_estimate()
+                return finish(
+                    Outcome.TICKET_UNKNOWN,
+                    ticket_id=ticket_id,
+                    error=f"status returned 404: {response.text[:200]}",
+                )
 
             if response is None or response.status_code >= 500:
                 session.consecutive_failures += 1

@@ -35,7 +35,7 @@ import httpx
 
 from aaac.client.fetch import fetch_page
 from aaac.client.probe import LinkObservation, run_probe, timed_poll
-from aaac.client.sdk import Outcome, run_client
+from aaac.client.sdk import ClientOutcome, Outcome, run_client
 from aaac.common.classes import AccessClass
 from aaac.common.tokens import issue_token
 from aaac.estimator.infer import classify
@@ -303,6 +303,8 @@ async def full_run(args) -> int:
     if outcome.error:
         line("error", outcome.error)
 
+    warn_ticket_state_loss([outcome])
+
     if outcome.outcome is Outcome.ADMISSION_UNAVAILABLE:
         print("\n  This is an INFRASTRUCTURE failure, not a client failure.")
         print("  The admission service is missing, failing, or answering with a")
@@ -310,6 +312,36 @@ async def full_run(args) -> int:
         print("  or an abandonment, and it must not be treated as one in results.")
         return 2
     return 0 if outcome.outcome is Outcome.COMPLETED else 1
+
+
+def warn_ticket_state_loss(outcomes: list[ClientOutcome]) -> int:
+    """Shout if any ticket went missing. Returns the count.
+
+    A per-client outcome buried in a summary table is exactly the shape of
+    finding that gets skimmed past, and if this fires the whole run is suspect.
+    So it is printed as a separated block rather than left as a tally to infer.
+
+    Deliberately not a raise and not an exit code: the run should still complete
+    and report everything else. The point is visibility, not abortion.
+    """
+    n = sum(1 for o in outcomes if o.outcome is Outcome.TICKET_UNKNOWN)
+    if n == 0:
+        return 0
+
+    bar = "!" * 74
+    print(f"\n{bar}")
+    print(f"  WARNING: {n} client(s) were told their ticket does not exist (404).")
+    print()
+    print("  TICKET STATE LOSS MAY HAVE OCCURRED. The admission service answered")
+    print("  correctly and promptly -- it simply has no record of these tickets.")
+    print("  Likely causes: the admission service restarted while using the")
+    print("  in-memory store, Redis eviction, a run_id change mid-run, or a")
+    print("  ticket purge.")
+    print()
+    print("  Every one of those invalidates the run it appears in. DO NOT TRUST")
+    print("  THIS RUN'S NUMBERS without explaining where those tickets went.")
+    print(f"{bar}\n")
+    return n
 
 
 def main() -> int:
