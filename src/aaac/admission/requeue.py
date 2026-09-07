@@ -21,13 +21,17 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
     if not ticket:
         return
         
-    # Always emit TIMEOUT first
+    # Always emit TIMEOUT first.
+    # bytes=0, duration_ms=None: delivery never started for a timed-out ticket;
+    # M3 should read goodput bytes as 0 for TIMEOUT events.
     await logger.log(
         "TIMEOUT",
         ticket_id=tid,
         access_class=int(ticket.access_class),
         true_class=int(ticket.true_class),
-        attempt=ticket.attempt
+        attempt=ticket.attempt,
+        bytes=0,
+        duration_ms=None,
     )
     
     new_attempt = ticket.attempt + 1

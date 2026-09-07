@@ -32,6 +32,12 @@ class AdmissionController:
         self.completions_this_tick = 0
         self.alpha = float(cfg.admission.alpha_min)
         self.mu_hat = 0.0
+        # True once record_completion() is called at least once. Used to gate the
+        # cold-start C_max bypass: we hold capacity unconstrained until the EWMA
+        # has at least one real data point. mu_hat > 0 was wrong here — the EWMA
+        # decays geometrically and is never exactly 0 after any completion, so the
+        # bypass never re-engaged and C_max pinned at ceil(epsilon * w_mean) = 1.
+        self._ever_completed: bool = False
 
         self.is_running = False
         self._task: asyncio.Task | None = None
@@ -42,6 +48,7 @@ class AdmissionController:
     def record_completion(self) -> None:
         """Call this from the API when a ticket completes to update capacity estimates."""
         self.completions_this_tick += 1
+        self._ever_completed = True
 
     async def start(self) -> None:
         """Start the background controller loop."""
@@ -127,8 +134,11 @@ class AdmissionController:
         w_mean = weighted_mean_window(waiting_counts, adm_cfg, self.cfg.mode)
         c_max_base = math.ceil(self.mu_hat * w_mean)
         
-        # Cold start: if mu_hat is 0, we bypass C_max to allow initial tickets to flow.
-        c_max = c_max_base if self.mu_hat > 0 else float('inf')
+        # Cold-start bypass: hold C_max unconstrained until the EWMA has seen at
+        # least one real completion. Do NOT gate on `mu_hat > 0` — the EWMA decays
+        # geometrically but never reaches exactly 0 after any completion, so that
+        # check never re-engages and C_max pins at ceil(epsilon * w_mean) = 1.
+        c_max = c_max_base if self._ever_completed else float('inf')
 
         # 4. Admit tickets
         alpha_limit = int(self.alpha * adm_cfg.control_tick_s)
@@ -165,7 +175,10 @@ class AdmissionController:
             await self.requeue_handler(tid, self.store, self.logger, self.cfg)
 
         # 6. Emit CONTROL event
+        # origin_p99 uses None (→ JSON null) when origin is unreachable; float('inf')
+        # is not valid JSON and breaks strict parsers.
         c_max_log = -1 if c_max == float('inf') else c_max
+        p99_log = None if math.isinf(p99) else p99
         await self.logger.log(
             "CONTROL",
             ticket_id=None,
@@ -173,5 +186,5 @@ class AdmissionController:
             mu_hat=self.mu_hat,
             in_flight=in_flight,
             C_max=c_max_log,
-            origin_p99=p99
+            origin_p99=p99_log
         )
