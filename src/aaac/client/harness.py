@@ -64,6 +64,14 @@ ENDPOINTS = [
      "the result record the delivery service renders (M3)"),
 ]
 
+#: Concrete probe path -> the route template a service declares for it.
+TEMPLATES = {
+    "/probe/1024": "/probe/{n_bytes}",
+    "/static/crest.png": "/static/{asset}",
+    "/queue/status/PREFLIGHT": "/queue/status/{ticket_id}",
+    "/origin/result?index=4218866": "/origin/result",
+}
+
 
 def h1(text: str) -> None:
     print(f"\n\033[1m{text}\033[0m\n" + "-" * len(text))
@@ -73,27 +81,61 @@ def line(label: str, value: object) -> None:
     print(f"  {label:<26} {value}")
 
 
+async def _registered_routes(client: httpx.AsyncClient, base: str) -> set[str] | None:
+    """Route templates the service declares, from its OpenAPI schema.
+
+    Asking the service what it implements beats inferring it from status codes.
+    A 404 is ambiguous -- FastAPI returns it both for an unregistered route and
+    for a registered route whose resource does not exist. `GET
+    /queue/status/PREFLIGHT` on a working admission service returns 404 "Ticket
+    not found", and a status-code preflight reports that healthy endpoint as
+    missing. That is a check which lies in the one direction that matters.
+    """
+    try:
+        r = await client.get(base.rstrip("/") + "/openapi.json")
+        if r.status_code != 200:
+            return None
+        return set(r.json().get("paths", {}))
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
 async def preflight(bases: dict[str, str]) -> dict[str, bool]:
     """Probe every endpoint and report what is there, in plain language."""
     h1("Preflight")
     alive: dict[str, bool] = {}
 
     async with httpx.AsyncClient(timeout=5.0) as client:
+        schemas = {
+            svc: await _registered_routes(client, base)
+            for svc, base in bases.items()
+        }
+
         for service, method, path, purpose in ENDPOINTS:
             url = bases[service].rstrip("/") + path
+            declared = schemas.get(service)
             try:
                 if method == "GET":
                     r = await client.get(url)
                 else:
                     r = await client.request(method, url, json={})
                 status = r.status_code
-                # 4xx means the route EXISTS and rejected our probe body, which
-                # is exactly what a preflight POST should expect.
-                ok = status != 404
+
+                if declared is not None:
+                    # Authoritative: match against declared route templates,
+                    # so a 404 for a missing *ticket* is not read as a missing
+                    # *route*.
+                    template = TEMPLATES.get(path, path)
+                    ok = template in declared
+                    detail = f"HTTP {status} -- route declared" if ok else (
+                        f"HTTP {status} -- not in the service's OpenAPI schema"
+                    )
+                else:
+                    # No schema available; fall back to the status code and say
+                    # so, because this inference is weaker.
+                    ok = status != 404
+                    detail = f"HTTP {status} (inferred; no OpenAPI schema)"
                 mark = "OK  " if ok else "MISS"
-                detail = f"HTTP {status}"
-                if status == 404:
-                    detail = "404 -- route not implemented yet"
             except httpx.HTTPError as exc:
                 ok = False
                 mark = "DOWN"
