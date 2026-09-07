@@ -1,0 +1,34 @@
+CLAUDE.md
+
+# Virtualenv
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets — AAAC_TOKEN_SECRET etc. (CLAUDE.md §3.7)
+.env
+.env.*
+!.env.example
+
+# Generated run output. Event logs are the primary instrument (CLAUDE.md §3.8)
+# but they are large and regenerable; figures and reports stay tracked so the
+# write-up can reference them.
+results/*.jsonl
+results/population-*.json
+
+# OS / editor
+.DS_Store
+*.swp

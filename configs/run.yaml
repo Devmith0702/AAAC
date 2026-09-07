@@ -1,0 +1,33 @@
+# configs/run.yaml — single source of run parameters (CLAUDE.md §3.2).
+#
+# M3 (Devmith) owns the `origin:` and `load:` sections. They are transcribed from
+# CLAUDE.md §3.9 verbatim except where marked ADDED below.
+#
+# M1 and M2: add your own top-level sections (`admission:`, `estimator:`,
+# `delivery:`, ...). Do not edit sections you do not own.
+
+seed: 1
+run_id: dev
+mode: none # none | baseline | aaac  (CLAUDE.md §3.4)
+results_dir: results
+
+origin:
+  service_time_ms: { dist: lognormal, median: 60, sigma: 0.5 }
+  concurrency_limit: 64
+  queue_limit: 256 # beyond this, 503
+  # ADDED by M3 — these are constants stated in CLAUDE.md §4.1 ("rolling 5 s
+  # window", "ORIGIN_SAMPLE once per second") lifted into config so the testbed
+  # can be exercised at other resolutions without a code change. Not a contract
+  # change: both live under `origin:`, which is M3's section.
+  health_window_s: 5.0
+  health_buckets: 5
+  sample_interval_s: 1.0
+
+load:
+  n_clients: 20000
+  scale_factor: 10 # represents 200k real users
+  burst_center_s: 30
+  burst_sigma_s: 15
+  tail_decay_s: 600
+  class_mix: { HIGH: 0.25, MEDIUM: 0.40, LOW: 0.35 }
+  abandon_after_s: 900
