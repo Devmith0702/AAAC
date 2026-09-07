@@ -126,6 +126,13 @@ async def queue_join(req: JoinRequest):
     # never waits, while still following the identical join→status→complete
     # protocol that M2 uses in baseline and aaac modes.
     if cfg.mode == "none":
+        # none mode reproduces congestion collapse: the portal as it exists today,
+        # everyone getting the full 411 KB page, origin unconstrained. Using HIGH
+        # (full variant) is deliberate — MEDIUM would serve reduced at ~5 KB, which
+        # is payload adaptation (C3), exactly the mechanism the control condition
+        # exists to lack. §0.3's MEDIUM default is a safety rule for when AAAC
+        # can't classify a client; none isn't a classification failure, it's the
+        # deliberate absence of the mechanism, so the default doesn't apply.
         window_s = _NONE_MODE_WINDOW_S
         expires_at = time.time() + window_s
         # Create ticket already in ADMITTED state
@@ -220,12 +227,6 @@ async def queue_estimate(est: LinkEstimate):
     # ticket is WAITING again on attempt 2, so a fresh HIGH estimate would
     # silently upgrade MEDIUM back to HIGH (I2 violation).
     if ticket.attempt > 1:
-        return {"accepted": False, "access_class": int(ticket.access_class)}
-
-    # Only accept downgrades or same class (additional I2 guard).
-    if int(est.access_class) < int(ticket.access_class):
-        # The incoming estimate claims a better class than we currently hold.
-        # Reject — classifier may be wrong, and we never upgrade.
         return {"accepted": False, "access_class": int(ticket.access_class)}
 
     await logger.log(

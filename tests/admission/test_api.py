@@ -200,33 +200,42 @@ async def test_estimate_rejected_on_requeued_ticket():
 
 
 @pytest.mark.asyncio
-async def test_estimate_rejected_if_upgrade_attempt():
-    """D2: even on attempt=1, an estimate claiming a better class must be rejected."""
+async def test_estimate_accepted_when_upgrading_from_medium_default():
+    """
+    Guard 2 was removed: a HIGH estimate on attempt=1 must now be ACCEPTED.
+
+    MEDIUM at join is an absence-of-information placeholder, not a prior
+    measurement. The establishing estimate can legitimately place the ticket
+    at HIGH. Rejecting it made HIGH classification impossible, which broke Δ
+    (the completion-rate gap between HIGH and LOW that the project reports).
+
+    Only attempt > 1 estimates are blocked (guard 1, I2 enforcement).
+    """
     with TestClient(app) as client:
-        # Join as MEDIUM (default)
         join_res = client.post("/queue/join", json={"client_id": "c1", "true_class": 0})
         tid = join_res.json()["ticket_id"]
 
-        # Downgrade the ticket to LOW via a previous accepted estimate
-        await api.store.update_class(tid, AccessClass.LOW)
-
-        # Now try to send a MEDIUM estimate — that's an upgrade from LOW
+        # Ticket starts at MEDIUM default; HIGH estimate on attempt=1 must succeed.
         est_res = client.post("/queue/estimate", json={
             "ticket_id": tid,
-            "throughput_kbps": 500.0,
-            "rtt_mean_ms": 100.0,
-            "rtt_jitter_ms": 20.0,
-            "loss_ratio": 0.01,
-            "stability": 0.6,
-            "access_class": 1,   # MEDIUM — upgrade from LOW
-            "confidence": 0.85,
+            "throughput_kbps": 5000.0,
+            "rtt_mean_ms": 10.0,
+            "rtt_jitter_ms": 1.0,
+            "loss_ratio": 0.0,
+            "stability": 1.0,
+            "access_class": 0,   # HIGH — from MEDIUM default, attempt=1
+            "confidence": 0.99,
             "model_version": "v1",
             "fallback": False,
         })
-        assert est_res.json()["accepted"] is False
+        assert est_res.json()["accepted"] is True, (
+            "HIGH estimate on attempt=1 must be accepted — MEDIUM is a placeholder, "
+            "not a prior measurement"
+        )
 
         ticket = await api.store.get_ticket(tid)
-        assert ticket.access_class == AccessClass.LOW, "Class must not have been upgraded"
+        assert ticket.access_class == AccessClass.HIGH
+
 
 
 @pytest.mark.asyncio
