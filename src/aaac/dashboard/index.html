@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AAAC — admission dashboard</title>
+
+<!--
+  AAAC operator dashboard — C? / CLAUDE.md section 4.4.  Owner: M2 (Sachintha).
+
+  LAYOUT NOTE.  `src/aaac/dashboard/` is not listed in the section 3.2 repository
+  layout.  It is a layout ADDITION, not a CONTRACT CHANGE: nothing imports this
+  file, it exposes no interface, and it cannot break M1's or M3's package.
+  Recorded here so it is visible rather than discovered.
+
+  One static HTML file.  One <script>.  No React, no build step, no npm, and no
+  external request of any kind -- no CDN, no web font, no favicon.  It must run
+  by double-clicking it.
+
+  USAGE.  The admission service URL is a query parameter so two tabs can sit
+  side by side for the baseline-vs-AAAC demo:
+
+      index.html?admission=http://127.0.0.1:8000      <- one tab
+      index.html?admission=http://127.0.0.1:8010      <- the other
+
+  Two tabs, deliberately.  Not one combined page: the demo is two independent
+  panes showing the same metric diverge.
+
+  KNOWN BLOCKER (raised with M1).  /admin/stream currently sends no
+  Access-Control-Allow-Origin header, and EventSource is subject to CORS.  Until
+  CORSMiddleware is added to the admission app, this page cannot connect to a
+  service on another origin and will sit in DISCONNECTED.  A CORS rejection is
+  indistinguishable from "service is down" in JavaScript -- the browser gives us
+  a bare error event with no detail -- so the disconnected panel names both
+  causes instead of guessing between them.
+-->
+
+<style>
+  :root {
+    --bg:        #0d1117;
+    --panel:     #161b22;
+    --line:      #30363d;
+    --ink:       #e6edf3;
+    --ink-dim:   #8b949e;
+    --ink-faint: #6e7681;
+    --high:      #58a6ff;
+    --medium:    #d29922;
+    --low:       #f85149;
+    --ok:        #3fb950;
+    --warn:      #d29922;
+    --bad:       #f85149;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  body { padding: clamp(10px, 1.6vw, 22px); }
+
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  /* ---------- header ---------- */
+
+  header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: clamp(8px, 1.4vw, 18px);
+    border-bottom: 2px solid var(--line);
+    padding-bottom: clamp(8px, 1.2vw, 14px);
+  }
+
+  .brand {
+    font-size: clamp(20px, 2.6vw, 34px);
+    font-weight: 700;
+    letter-spacing: .06em;
+  }
+
+  .mode {
+    font-size: clamp(15px, 2vw, 26px);
+    font-weight: 700;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    padding: .12em .55em;
+    border: 2px solid currentColor;
+    border-radius: 4px;
+  }
+  .mode[data-mode="aaac"]     { color: var(--ok); }
+  .mode[data-mode="baseline"] { color: var(--warn); }
+  .mode[data-mode="none"]     { color: var(--bad); }
+  .mode[data-mode="?"]        { color: var(--ink-faint); }
+
+  .meta {
+    margin-left: auto;
+    text-align: right;
+    font-size: clamp(11px, 1.15vw, 15px);
+    color: var(--ink-dim);
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  /* ---------- connection lamp ---------- */
+
+  .lamp {
+    display: inline-flex;
+    align-items: center;
+    gap: .5em;
+    font-weight: 700;
+    letter-spacing: .10em;
+  }
+  .lamp .dot {
+    width: .72em; height: .72em;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+  .lamp[data-state="LIVE"]         { color: var(--ok); }
+  .lamp[data-state="STALE"]        { color: var(--warn); }
+  .lamp[data-state="DISCONNECTED"] { color: var(--bad); }
+  .lamp[data-state="CONNECTING"]   { color: var(--ink-dim); }
+  .lamp[data-state="CONFIG ERROR"] { color: var(--bad); }
+
+  /* ---------- notice bar ---------- */
+
+  .notice {
+    margin-top: 12px;
+    padding: clamp(8px, 1.1vw, 14px) clamp(10px, 1.3vw, 16px);
+    border-left: 5px solid var(--warn);
+    background: #21262d;
+    color: var(--ink);
+    font-size: clamp(12px, 1.25vw, 16px);
+    line-height: 1.55;
+  }
+  .notice[hidden] { display: none; }
+  .notice b { color: var(--warn); }
+  .notice.bad { border-left-color: var(--bad); }
+  .notice.bad b { color: var(--bad); }
+  .notice button {
+    margin-top: 10px;
+    font: inherit;
+    font-size: .95em;
+    color: var(--ink);
+    background: #30363d;
+    border: 1px solid #484f58;
+    border-radius: 4px;
+    padding: .4em 1.1em;
+    cursor: pointer;
+  }
+  .notice button:hover { background: #3d444d; }
+
+  /* ---------- delta hero ---------- */
+
+  .delta {
+    margin: clamp(14px, 2.4vw, 34px) 0;
+    padding: clamp(12px, 2vw, 26px);
+    background: var(--panel);
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    text-align: center;
+  }
+
+  .delta h2 {
+    margin: 0;
+    font-size: clamp(12px, 1.5vw, 19px);
+    font-weight: 600;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  /* The em dash renders at the same size a number would, so the layout does
+     not jump when delta starts resolving. */
+  .delta .value {
+    font-size: clamp(72px, 15vw, 180px);
+    font-weight: 700;
+    line-height: 1.02;
+    margin: .06em 0;
+  }
+  .delta .value.unavailable { color: var(--ink-faint); }
+
+  .delta .reason {
+    font-size: clamp(12px, 1.4vw, 18px);
+    color: var(--ink-dim);
+    min-height: 1.5em;
+  }
+
+  /* ---------- class table ---------- */
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(6.5em, 1.1fr) repeat(3, 1fr);
+    gap: clamp(3px, .5vw, 7px);
+  }
+
+  .grid .head {
+    font-size: clamp(11px, 1.2vw, 16px);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    padding: .5em .3em;
+    text-align: right;
+  }
+  .grid .head.corner { text-align: left; }
+
+  .grid .cls {
+    display: flex;
+    align-items: center;
+    gap: .55em;
+    font-size: clamp(15px, 1.9vw, 26px);
+    font-weight: 700;
+    letter-spacing: .07em;
+    background: var(--panel);
+    padding: .5em .6em;
+    border-radius: 5px 0 0 5px;
+  }
+  /* A colour bar AND a text label. Never colour alone -- projectors wash out
+     and colourblind viewers are in the room. */
+  .grid .cls .bar {
+    width: .34em;
+    align-self: stretch;
+    border-radius: 2px;
+    flex: none;
+  }
+  .grid .cls[data-cls="0"] .bar { background: var(--high); }
+  .grid .cls[data-cls="1"] .bar { background: var(--medium); }
+  .grid .cls[data-cls="2"] .bar { background: var(--low); }
+
+  .grid .num {
+    background: var(--panel);
+    padding: .3em .55em;
+    text-align: right;
+    font-size: clamp(26px, 5vw, 54px);
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  .grid .num:last-child { border-radius: 0 5px 5px 0; }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    margin-top: clamp(12px, 1.8vw, 22px);
+    padding-top: clamp(8px, 1.1vw, 13px);
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: clamp(10px, 2vw, 30px);
+    font-size: clamp(11px, 1.15vw, 15px);
+    color: var(--ink-dim);
+  }
+  footer b { color: var(--ink); font-weight: 700; }
+
+  /* ---------- staleness ----------
+     Dimmed and timestamped, never blanked: on a projector a blank panel is
+     indistinguishable from a broken one. Nothing here may read as live. */
+  .live-value { transition: opacity .18s ease; }
+  body.stale .live-value { opacity: .32; }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="brand">AAAC</span>
+    <span class="mode" id="mode" data-mode="?">—</span>
+    <span class="meta">
+      <span class="lamp" id="lamp" data-state="CONNECTING">
+        <span class="dot"></span><span id="lampText">CONNECTING</span>
+      </span><br>
+      <span id="metaUrl">—</span><br>
+      <span id="metaRun">run —</span>
+      <span id="metaAge"></span>
+    </span>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <section class="delta">
+    <h2>&Delta; &nbsp; HIGH &minus; LOW completion rate</h2>
+    <div class="value unavailable" id="deltaValue">&mdash;</div>
+    <div class="reason" id="deltaReason">waiting for first update</div>
+  </section>
+
+  <div class="grid">
+    <div class="head corner">class</div>
+    <div class="head">waiting</div>
+    <div class="head">completed</div>
+    <div class="head">timed out</div>
+
+    <div class="cls" data-cls="0"><span class="bar"></span>HIGH</div>
+    <div class="num live-value" id="w0">—</div>
+    <div class="num live-value" id="c0">—</div>
+    <div class="num live-value" id="t0">—</div>
+
+    <div class="cls" data-cls="1"><span class="bar"></span>MEDIUM</div>
+    <div class="num live-value" id="w1">—</div>
+    <div class="num live-value" id="c1">—</div>
+    <div class="num live-value" id="t1">—</div>
+
+    <div class="cls" data-cls="2"><span class="bar"></span>LOW</div>
+    <div class="num live-value" id="w2">—</div>
+    <div class="num live-value" id="c2">—</div>
+    <div class="num live-value" id="t2">—</div>
+  </div>
+
+  <footer>
+    <span>&alpha; <b class="live-value" id="alpha">—</b></span>
+    <span>&micro;&#770; <b class="live-value" id="muhat">—</b></span>
+    <span>in flight <b class="live-value" id="inflight">—</b></span>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // --- configuration -------------------------------------------------------
+
+  var STALE_AFTER_MS = 3500;   // 3.5 missed 1 Hz ticks
+  var TICK_MS        = 250;
+
+  var el = function (id) { return document.getElementById(id); };
+
+  /* The admission URL arrives from the query string so two tabs can run side
+     by side. Only http(s) is accepted -- without that check the parameter is a
+     javascript: sink. */
+  function resolveAdmissionUrl() {
+    var raw = new URLSearchParams(location.search).get("admission");
+    if (!raw) {
+      if (location.protocol === "http:" || location.protocol === "https:") {
+        return { url: location.origin };
+      }
+      return {
+        error: "No ?admission= parameter, and this page was not loaded over " +
+               "http(s) so there is no origin to fall back to. Open it as " +
+               "index.html?admission=http://127.0.0.1:8000"
+      };
+    }
+    var parsed;
+    try {
+      parsed = new URL(raw, location.href);
+    } catch (e) {
+      return { error: "The ?admission= parameter is not a valid URL: " + raw };
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { error: "The ?admission= parameter must be http or https, got: " +
+                      parsed.protocol };
+    }
+    return { url: parsed.origin + parsed.pathname.replace(/\/+$/, "") };
+  }
+
+  // --- delta ---------------------------------------------------------------
+
+  /* Delta is the completion-RATE gap between HIGH and LOW, so it needs a
+     per-class denominator: how many clients of each class have ever joined.
+     The snapshot does not carry one.
+       - completed[cls] is cumulative and correct, but it is only a numerator.
+       - timed_out[cls] counts timeout EVENTS, not clients: one ticket produced
+         timeouts at attempts 1, 2 and 3 in the 2026-09-07 integration run, so
+         completed/(completed+timed_out) scores a client that retried twice and
+         then succeeded as 0.33. That denominator is also biased against AAAC
+         specifically, because retrying is AAAC's mechanism.
+       - waiting[cls] is a gauge, and it never decreases when a client abandons
+         client-side. It read 299 for a queue with zero live clients.
+
+     So this returns null until M1 adds joined[cls] (requested 2026-09-07). The
+     em-dash path below is therefore the one that ships and gets exercised.
+     When the counters land, this function starts returning a number and
+     nothing else has to change.
+
+     It must never return 0 as a stand-in for "unknown". A displayed 0.0 reads
+     as "the gap is closed", which is the project's headline claim. */
+  function computeDelta(snap) {
+    var joined = snap && snap.joined;
+    if (!joined || typeof joined !== "object") {
+      return { value: null, reason: "denominator-unavailable" };
+    }
+    var hj = Number(joined["0"]) || 0;
+    var lj = Number(joined["2"]) || 0;
+    if (hj === 0 || lj === 0) {
+      return { value: null, reason: "no-classified" };
+    }
+    var hc = Number(snap.completed && snap.completed["0"]) || 0;
+    var lc = Number(snap.completed && snap.completed["2"]) || 0;
+
+    /* Before anyone has completed, both rates are 0 and the gap is arithmetically
+       0 -- a real computed value, not a placeholder. It is still suppressed,
+       because on screen it is indistinguishable from the closed gap that is this
+       project's headline claim, and at that moment it means only "nothing has
+       happened yet". Same reasoning as the em-dash rule, reached through a
+       different door. */
+    if (hc === 0 && lc === 0) {
+      return { value: null, reason: "no-completions" };
+    }
+    return { value: (hc / hj) - (lc / lj), reason: null };
+  }
+
+  var DELTA_REASON_TEXT = {
+    "denominator-unavailable":
+      "denominator unavailable — the snapshot carries no joined[class] count",
+    "no-classified":
+      "no classified clients yet — no HIGH or no LOW client has joined",
+    "no-completions":
+      "no completions yet — a gap of 0 here would mean nothing has happened"
+  };
+
+  function renderDelta(snap) {
+    var v = el("deltaValue"), r = el("deltaReason");
+    var d = computeDelta(snap);
+    if (d.value === null) {
+      v.textContent = "—";                        // em dash, never 0.0
+      v.classList.add("unavailable");
+      r.textContent = DELTA_REASON_TEXT[d.reason] || "unavailable";
+      return;
+    }
+    v.textContent = (d.value >= 0 ? "+" : "−") +
+                    Math.abs(d.value * 100).toFixed(1) + "%";
+    v.classList.remove("unavailable");
+    r.textContent = "HIGH − LOW completion rate";
+  }
+
+  // --- state ---------------------------------------------------------------
+
+  var source      = null;
+  var lastFrameAt = 0;
+  var lastSnap    = null;
+  var connState   = "CONNECTING";
+  var runId       = null;
+  var cfg         = resolveAdmissionUrl();
+
+  function setNotice(html, bad) {
+    var n = el("notice");
+    if (!html) { n.hidden = true; n.innerHTML = ""; return; }
+    n.hidden = false;
+    n.className = "notice" + (bad ? " bad" : "");
+    n.innerHTML = html;
+    var btn = n.querySelector("button");
+    if (btn) btn.addEventListener("click", connect);
+  }
+
+  function setState(s) {
+    connState = s;
+    el("lamp").setAttribute("data-state", s);
+    el("lampText").textContent = s;
+    document.body.classList.toggle("stale", s === "STALE" || s === "DISCONNECTED");
+  }
+
+  function fmt(n) {
+    return (typeof n === "number" && isFinite(n)) ? n.toLocaleString("en") : "—";
+  }
+
+  function render(snap) {
+    el("mode").textContent = snap.mode || "?";
+    el("mode").setAttribute("data-mode", snap.mode || "?");
+    el("metaRun").textContent = "run " + (snap.run_id || "—");
+
+    ["0", "1", "2"].forEach(function (c) {
+      el("w" + c).textContent = fmt(snap.waiting   && snap.waiting[c]);
+      el("c" + c).textContent = fmt(snap.completed && snap.completed[c]);
+      el("t" + c).textContent = fmt(snap.timed_out && snap.timed_out[c]);
+    });
+
+    el("alpha").textContent    = typeof snap.alpha === "number" ? snap.alpha.toFixed(1) : "—";
+    el("muhat").textContent    = typeof snap.mu_hat === "number" ? snap.mu_hat.toFixed(3) : "—";
+    el("inflight").textContent = fmt(snap.in_flight);
+
+    renderDelta(snap);
+  }
+
+  // --- connection ----------------------------------------------------------
+
+  function connect() {
+    if (cfg.error) {
+      setState("CONFIG ERROR");
+      setNotice("<b>Cannot start.</b><br>" + cfg.error, true);
+      return;
+    }
+    if (source) { source.close(); source = null; }
+
+    setState("CONNECTING");
+    setNotice("Connecting to <b>" + cfg.url + "/admin/stream</b> …");
+    el("metaUrl").textContent = cfg.url;
+
+    try {
+      source = new EventSource(cfg.url + "/admin/stream");
+    } catch (e) {
+      setState("DISCONNECTED");
+      setNotice("<b>Could not open the stream.</b><br>" + e, true);
+      return;
+    }
+
+    source.onopen = function () {
+      lastFrameAt = Date.now();
+      setState("LIVE");
+      setNotice(null);
+    };
+
+    source.onmessage = function (ev) {
+      var snap;
+      try {
+        snap = JSON.parse(ev.data);
+      } catch (e) {
+        return;                       // ignore one malformed frame; watchdog covers a run of them
+      }
+      lastFrameAt = Date.now();
+
+      /* run_id is per service start. A change means admission restarted, so the
+         counters below reset to zero and the two halves must not be spliced
+         together silently. */
+      if (runId !== null && snap.run_id !== runId) {
+        setNotice("<b>Admission service restarted.</b><br>run_id changed from <b>" +
+                  runId + "</b> to <b>" + snap.run_id +
+                  "</b>. Counters below start from zero; earlier figures are gone.");
+      }
+      runId = snap.run_id;
+
+      lastSnap = snap;
+      setState("LIVE");
+      render(snap);
+    };
+
+    /* EventSource reconnects on its own after a dropped connection, so this
+       reports rather than retries. It gives up eventually, which is what the
+       Reconnect button is for. A CORS rejection arrives here too, with no
+       detail that distinguishes it from the service being down -- so name
+       both causes rather than guess. */
+    source.onerror = function () {
+      if (source && source.readyState === EventSource.CONNECTING) {
+        setState("DISCONNECTED");
+        setNotice("<b>Disconnected.</b> Retrying automatically…<br>" +
+                  "If this does not clear, check that the admission service is " +
+                  "running at <b>" + cfg.url + "</b>, and that it sends CORS " +
+                  "headers (<code>Access-Control-Allow-Origin</code>) — a " +
+                  "CORS rejection is indistinguishable from an unreachable " +
+                  "service here.<br><button type=\"button\">Reconnect</button>", true);
+      } else {
+        setState("DISCONNECTED");
+        setNotice("<b>Stream closed.</b><br>" +
+                  "<button type=\"button\">Reconnect</button>", true);
+      }
+    };
+  }
+
+  /* EventSource fires no error for a connection that stays open but stops
+     sending, so age is checked independently of it. */
+  setInterval(function () {
+    if (cfg.error) return;
+    var age = lastFrameAt ? Date.now() - lastFrameAt : null;
+
+    if (age !== null && age > STALE_AFTER_MS && connState === "LIVE") {
+      setState("STALE");
+      setNotice("<b>No update for " + Math.round(age / 1000) + "s.</b> " +
+                "The connection is open but the service has stopped sending. " +
+                "Values below are dimmed and are not live.");
+    }
+    el("metaAge").textContent = (age === null)
+      ? ""
+      : ("· last update " +
+         (age < 1500 ? "just now" : Math.round(age / 1000) + "s ago"));
+
+    if (connState === "STALE") {
+      var n = el("notice");
+      if (!n.hidden) {
+        n.innerHTML = "<b>No update for " + Math.round(age / 1000) + "s.</b> " +
+                      "The connection is open but the service has stopped " +
+                      "sending. Values below are dimmed and are not live.";
+      }
+    }
+  }, TICK_MS);
+
+  renderDelta({});
+  connect();
+})();
+</script>
+</body>
+</html>
