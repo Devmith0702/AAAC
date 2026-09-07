@@ -21,13 +21,19 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
     if not ticket:
         return
         
-    # Always emit TIMEOUT first
+    # Always emit TIMEOUT first.
+    # NOTE: bytes and duration_ms are intentionally absent here. Delivery never
+    # started for a timed-out ticket, so the real bytes burned are unknown to
+    # the admission service. bytes=0 would silently corrupt goodput calculations
+    # — a zero that reads as real data is worse than a missing field.
+    # If M2's SDK reports bytes on the timeout path in a future protocol revision,
+    # this is where to add them.
     await logger.log(
         "TIMEOUT",
         ticket_id=tid,
         access_class=int(ticket.access_class),
         true_class=int(ticket.true_class),
-        attempt=ticket.attempt
+        attempt=ticket.attempt,
     )
     
     new_attempt = ticket.attempt + 1

@@ -16,13 +16,13 @@ Design decisions implemented (see README / task spec for context):
       a large window token. Clients join and poll exactly as in every other mode
       and simply never wait. This preserves client mode-blindness (required by M2).
 """
-from __future__ import annotations
-
 import asyncio
 import logging
+import math
 import os
 import time
 import json
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -38,7 +38,8 @@ from aaac.admission.store import InMemoryQueueStore, RedisQueueStore, QueueStore
 from aaac.admission.controller import AdmissionController
 from aaac.admission.window import window_for
 
-import random as _random
+
+
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +65,12 @@ class CompleteRequest(BaseModel):
 # Module-level state (populated in lifespan, replaced in tests)
 # ---------------------------------------------------------------------------
 cfg = get_config()
-_rng = _random.Random(cfg.seed)
 
+# NOTE on ticket_id generation: we use uuid.uuid4() (cryptographically random),
+# NOT a seeded RNG. §3.10 Rule 5 requires reproducible control decisions
+# (AIMD α, class assignment); it does not require reproducible identifiers.
+# A seeded module-level RNG replays the same ID sequence on every restart,
+# causing ticket_id collisions that corrupt M3's event log and classifier scoring.
 store: QueueStore = None          # type: ignore[assignment]
 logger: EventLogger = None        # type: ignore[assignment]
 controller: AdmissionController = None  # type: ignore[assignment]
@@ -81,7 +86,20 @@ _NONE_MODE_WINDOW_S = 3600.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, logger, controller
+    global store, logger, controller, cfg
+
+    # Per-run run_id: AAAC_RUN_ID env var takes full control; if absent, append a
+    # unix timestamp to make every restart unique. run_id was config-fixed at r07,
+    # so restarts appended to one file with interleaved events — unique IDs from
+    # finding 2 fixed collisions but not interleaving. A per-run id gives M3 a
+    # clean file per run that never needs filtering.
+    effective_run_id = os.environ.get(
+        "AAAC_RUN_ID",
+        f"{cfg.run_id}-{int(time.time())}"
+    )
+    import dataclasses
+    cfg = dataclasses.replace(cfg, run_id=effective_run_id)
+    log.info("Run ID: %s", effective_run_id)
 
     redis_url = os.environ.get("AAAC_REDIS_URL", "")
     if redis_url:
@@ -94,10 +112,10 @@ async def lifespan(app: FastAPI):
         log.info("Using InMemoryQueueStore (set AAAC_REDIS_URL for Redis)")
 
     logger = EventLogger(cfg.run_id, cfg.mode)
-    # origin_url is read from env so the harness can point to its own origin stub
     origin_url = os.environ.get("AAAC_ORIGIN_URL", "http://origin:8002")
     controller = AdmissionController(store, logger, cfg, origin_url=origin_url)
     await controller.start()
+
 
     yield
 
@@ -119,7 +137,10 @@ app = FastAPI(title="AAAC Admission Core", version="1.0.0", lifespan=lifespan)
 
 @app.post("/queue/join")
 async def queue_join(req: JoinRequest):
-    tid = f"{_rng.getrandbits(128):032x}"
+    # Finding 2 fix: use uuid.uuid4() so IDs are unique across restarts.
+    # A seeded RNG at module scope replays the same sequence every restart,
+    # causing collisions that corrupt the event log. See implementation_plan.md.
+    tid = uuid.uuid4().hex
     seq = await store.next_seq()
 
     # D3: none mode — immediately admit with a large window so the client

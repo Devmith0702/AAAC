@@ -70,6 +70,8 @@ async def test_requeue_aaac_downgrade(store, logger, mock_cfg):
     logger.log.assert_any_call(
         "TIMEOUT", ticket_id="t1", access_class=int(AccessClass.HIGH), true_class=int(AccessClass.HIGH), attempt=1
     )
+
+
     logger.log.assert_any_call(
         "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=1, forced_floor=False
     )
