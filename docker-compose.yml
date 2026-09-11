@@ -1,0 +1,132 @@
+# AAAC testbed environment (CLAUDE.md §4.2). Owned by M3.
+#
+# Client containers carry the netem/tbf chain and therefore need NET_ADMIN.
+# `netem.sh` exits non-zero if shaping fails to apply, so a client that could not
+# be shaped never reaches the load generator (§7.3).
+#
+# The netem values below MUST match src/aaac/evaluation/testbed/profiles.py --
+# tests/test_testbed_profiles.py asserts this. profiles.py is the source of
+# truth; these are a mirror, because compose cannot import Python.
+
+name: aaac
+
+x-client-build: &client-build
+  context: .
+  dockerfile: docker/client.Dockerfile
+
+x-client-common: &client-common
+  cap_add:
+    - NET_ADMIN
+  depends_on:
+    - origin
+  volumes:
+    - ./configs:/app/configs:ro
+    - ./results:/app/results
+  environment: &client-env
+    AAAC_CONFIG: /app/configs/run.yaml
+    AAAC_NETEM_IFACE: eth0
+    # Downstream is the direction that carries the ~450 KB page, so it is the
+    # one that must be shaped. See the header of netem.sh.
+    AAAC_NETEM_DIRECTION: ingress
+
+services:
+  # --- M1's queue state. Declared here so the environment is complete; M1 owns
+  # --- everything that talks to it.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  # --- M3: mock origin -----------------------------------------------------
+  origin:
+    build:
+      context: .
+      dockerfile: docker/origin.Dockerfile
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./results:/app/results
+    environment:
+      AAAC_CONFIG: /app/configs/run.yaml
+      AAAC_RESULTS_DIR: /app/results
+      AAAC_ORIGIN_HOST: 0.0.0.0
+      AAAC_ORIGIN_PORT: "8002"
+      AAAC_RUN_ID: ${AAAC_RUN_ID:-dev}
+      AAAC_MODE: ${AAAC_MODE:-none}
+      AAAC_SEED: ${AAAC_SEED:-1}
+
+  # --- M3: throughput reflector for `make verify-testbed` ------------------
+  # Unshaped on purpose: it is the reference point the shaped clients measure
+  # themselves against.
+  iperf:
+    build: *client-build
+    command: ["iperf3", "--server", "--port", "5201"]
+
+  # --- M3: shaped client containers ----------------------------------------
+  client-high:
+    <<: *client-common
+    build: *client-build
+    hostname: client-high
+    environment:
+      <<: *client-env
+      AAAC_NETEM_PROFILE: HIGH
+      AAAC_NETEM_RATE: 50mbit
+      AAAC_NETEM_DELAY: 15ms
+      AAAC_NETEM_JITTER: 3ms
+      AAAC_NETEM_LOSS: 0.01%
+      AAAC_NETEM_BURST: 256kbit
+    command: ["sh", "-c", "netem.sh && sleep infinity"]
+
+  client-medium:
+    <<: *client-common
+    build: *client-build
+    hostname: client-medium
+    environment:
+      <<: *client-env
+      AAAC_NETEM_PROFILE: MEDIUM
+      AAAC_NETEM_RATE: 5mbit
+      AAAC_NETEM_DELAY: 60ms
+      AAAC_NETEM_JITTER: 20ms
+      AAAC_NETEM_LOSS: 0.5%
+      AAAC_NETEM_BURST: 64kbit
+    command: ["sh", "-c", "netem.sh && sleep infinity"]
+
+  client-low:
+    <<: *client-common
+    build: *client-build
+    hostname: client-low
+    environment:
+      <<: *client-env
+      AAAC_NETEM_PROFILE: LOW
+      AAAC_NETEM_RATE: 512kbit
+      AAAC_NETEM_DELAY: 250ms
+      AAAC_NETEM_JITTER: 120ms
+      AAAC_NETEM_LOSS: 3%
+      AAAC_NETEM_BURST: 32kbit
+    command: ["sh", "-c", "netem.sh && sleep infinity"]
+# --- Not mine. Uncomment when M1 and M2 ship; ports are fixed by §3.5. -------
+#
+#  admission:          # M1 - http://admission:8000
+#    build:
+#      context: .
+#      dockerfile: docker/admission.Dockerfile
+#    depends_on: [redis, origin]
+#    environment:
+#      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET}
+#    ports: ["127.0.0.1:8000:8000"]
+#
+#  delivery:           # M2 - http://delivery:8001
+#    build:
+#      context: .
+#      dockerfile: docker/delivery.Dockerfile
+#    depends_on: [origin]
+#    environment:
+#      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET}
+#    ports: ["127.0.0.1:8001:8001"]

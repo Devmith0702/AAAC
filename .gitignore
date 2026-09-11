@@ -1,15 +1,24 @@
-CLAUDE.md
+# Personal Claude Code brief. Each owner keeps their own CLAUDE.md locally.
+CLAUDE-M3.md
 
-# Virtualenv
+# Virtual environments
 .venv/
 venv/
+env/
 
-# Python
+# Python bytecode
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Packaging / build
 build/
 dist/
+*.egg-info/
+*.egg
 
 # Tooling caches
 .pytest_cache/
@@ -28,7 +37,24 @@ htmlcov/
 # write-up can reference them.
 results/*.jsonl
 results/population-*.json
+results/testbed-verification-*.json
+
+# Fabricated data (src/aaac/evaluation/synth.py). These exist only to exercise
+# the analysis chain and the §4.7 falsification branch. A synthetic log in the
+# repository is a synthetic log someone can mistake for a measurement.
+synthetic-*.jsonl
+
+# Exported classifier bundle (M2). Binary and regenerable from
+# models/metrics.json + seed with the pinned LightGBM build.
+models/*.joblib
+
+# Editor / tooling local state
+.vscode/
+.idea/
+*.iml
+.claude/settings.local.json
 
 # OS / editor
 .DS_Store
+Thumbs.db
 *.swp

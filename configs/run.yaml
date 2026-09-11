@@ -1,7 +1,15 @@
 # configs/run.yaml — single source of run parameters (CLAUDE.md §3.2).
 #
-# M3 (Devmith) owns the `origin:` and `load:` sections. They are transcribed from
-# CLAUDE.md §3.9 verbatim except where marked ADDED below.
+# M3 (Devmith) owns the `origin:` and `load:` sections. They hold exactly the
+# keys of CLAUDE.md §3.9 and nothing more: M1's loader (common/config.py)
+# rejects any key it does not know, so an extra key here stops the admission
+# service starting.
+#
+# M3-only parameters therefore live as named defaults in
+# src/aaac/origin/config.py rather than in this file: the health window (5 s,
+# 5 buckets), the ORIGIN_SAMPLE interval (1 s), and the burst share of arrivals
+# (burst_fraction = 0.8, also written into every population file). The results
+# directory comes from AAAC_RESULTS_DIR, which M1 reads too.
 #
 # M1 and M2: add your own top-level sections (`admission:`, `estimator:`,
 # `delivery:`, ...). Do not edit sections you do not own.
@@ -9,19 +17,11 @@
 seed: 1
 run_id: dev
 mode: none # none | baseline | aaac  (CLAUDE.md §3.4)
-results_dir: results
 
 origin:
   service_time_ms: { dist: lognormal, median: 60, sigma: 0.5 }
   concurrency_limit: 64
   queue_limit: 256 # beyond this, 503
-  # ADDED by M3 — these are constants stated in CLAUDE.md §4.1 ("rolling 5 s
-  # window", "ORIGIN_SAMPLE once per second") lifted into config so the testbed
-  # can be exercised at other resolutions without a code change. Not a contract
-  # change: both live under `origin:`, which is M3's section.
-  health_window_s: 5.0
-  health_buckets: 5
-  sample_interval_s: 1.0
 
 load:
   n_clients: 20000

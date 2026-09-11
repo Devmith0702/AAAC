@@ -1,0 +1,28 @@
+# Line endings: LF in the repository and in every checkout, on every OS.
+#
+# The testbed runs inside Linux containers. A netem.sh checked out with CRLF
+# fails there, and a CRLF Makefile breaks its recipes. Editors on Windows handle
+# LF without trouble, so there is no reason to let checkouts diverge.
+* text=auto eol=lf
+
+*.sh         text eol=lf
+*.py         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.toml       text eol=lf
+*.md         text eol=lf
+*.json       text eol=lf
+*.jsonl      text eol=lf
+*.html       text eol=lf
+*.css        text eol=lf
+*.js         text eol=lf
+Makefile     text eol=lf
+Dockerfile   text eol=lf
+*.Dockerfile text eol=lf
+
+# Binary assets: never normalise.
+*.png    binary
+*.jpg    binary
+*.pdf    binary
+*.woff2  binary
+*.joblib binary
