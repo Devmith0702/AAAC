@@ -6,13 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "aaac"
 version = "0.1.0"
 description = "AAAC — Access-Aware Admission Control"
+readme = "README.md"
 requires-python = ">=3.11,<3.12"
+license = {text = "MIT"}
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "httpx>=0.27",
     "pyyaml>=6.0",
+    "redis>=5",
+    # Pinned exactly: the exported bundle is gitignored, so reproducing it
+    # from metrics.json + seed requires the same LightGBM build.
+    "lightgbm==4.7.0",
+    "scikit-learn",
+    "joblib",
     # Analysis stack, CLAUDE.md §3.1. No seaborn, no plotly, and deliberately
     # no scipy: the t-distribution and Wilcoxon routines in evaluation/stats.py
     # are implemented here rather than adding a dependency outside §3.1.
@@ -50,6 +58,7 @@ disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 # CLAUDE.md §3.10 rule 4: unit tests must not require Redis or the network.
 addopts = "-q"

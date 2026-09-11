@@ -13,7 +13,7 @@ RESULTS  ?= results
 .DEFAULT_GOAL := help
 
 .PHONY: help venv install test lint typecheck check fmt \
-        build up down ps logs verify-testbed \
+        build up down run stop ps logs verify-testbed \
         population experiment figures report clean clean-results
 
 help: ## Show this help
@@ -51,7 +51,7 @@ build: ## Build the container images
 	docker compose build
 
 up: ## Start the testbed (origin, redis, iperf, shaped clients)
-	docker compose up -d --build
+	AAAC_MODE=$(MODE) AAAC_RUN_ID=$(RUN_ID) docker compose up -d --build
 	@echo "Waiting for the origin to answer /origin/health ..."
 	@for i in $$(seq 1 60); do \
 	    curl -sf http://127.0.0.1:8002/origin/health >/dev/null && break; \
@@ -61,6 +61,10 @@ up: ## Start the testbed (origin, redis, iperf, shaped clients)
 
 down: ## Stop the testbed and remove volumes
 	docker compose down -v
+
+run: up ## Alias for `up` (e.g. `make run MODE=aaac`)
+
+stop: down ## Alias for `down`
 
 ps: ## Show container status
 	docker compose ps

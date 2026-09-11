@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Examination Result — {{ r.index_no }}</title>
+<style>
+/* One inline block. No web font, no framework, no script, no image: every
+   byte here arrives in the same response as the document, so this variant
+   costs exactly one round trip like `essential` does. What it buys over
+   `essential` is presentation, not information. */
+:root{
+  --navy:#0e2b54; --navy-deep:#081833; --gold:#c69e3e;
+  --ink:#1a1d21; --muted:#5b6470; --line:#d7dce3; --paper:#ffffff;
+  --wash:#f4f6f9; --pass:#1c6b3f; --fail:#9b2c2c;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--wash);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.5;font-size:16px;
+}
+header{background:var(--navy);color:#fff;padding:1.25rem 1rem;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:52rem;margin:0 auto}
+header h1{margin:0;font-size:1.35rem;letter-spacing:.01em}
+header p{margin:.25rem 0 0;opacity:.85;font-size:.9rem}
+main{max-width:52rem;margin:0 auto;padding:1.25rem 1rem 3rem}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:1.1rem 1.15rem;margin-bottom:1.1rem}
+.card h2{margin:0 0 .75rem;font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.85rem}
+.field .label{display:block;font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.field .value{display:block;font-size:1.05rem;font-weight:600;margin-top:.15rem}
+table{width:100%;border-collapse:collapse;font-size:.97rem}
+caption{text-align:left;font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700;padding-bottom:.55rem}
+th,td{text-align:left;padding:.6rem .55rem;border-bottom:1px solid var(--line)}
+thead th{font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);border-bottom:2px solid var(--line)}
+tbody tr:last-child td{border-bottom:none}
+td.grade{font-weight:700;text-align:center;width:5.5rem}
+.badge{display:inline-block;padding:.2rem .6rem;border-radius:999px;font-size:.82rem;font-weight:700}
+.badge.ok{background:#e6f4ec;color:var(--pass)}
+.badge.no{background:#fbeaea;color:var(--fail)}
+.summary{display:flex;flex-wrap:wrap;gap:1.4rem;align-items:center}
+.z{font-size:1.6rem;font-weight:700;color:var(--navy)}
+footer{max-width:52rem;margin:0 auto;padding:0 1rem 2rem;color:var(--muted);font-size:.82rem}
+@media (max-width:34rem){header h1{font-size:1.15rem}main{padding:1rem .75rem 2rem}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>{{ r.exam }}</h1>
+    <p>Examination results &middot; {{ r.year }}</p>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Candidate</h2>
+    <div class="grid">
+      <div class="field"><span class="label">Index number</span><span class="value">{{ r.index_no }}</span></div>
+      <div class="field"><span class="label">Name</span><span class="value">{{ r.name }}</span></div>
+      <div class="field"><span class="label">Centre</span><span class="value">{{ r.centre }}</span></div>
+      <div class="field"><span class="label">District</span><span class="value">{{ r.district }}</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <table>
+      <caption>Subject results</caption>
+      <thead><tr><th>Subject</th><th>Medium</th><th class="grade">Grade</th></tr></thead>
+      <tbody>
+      {% for s in r.subjects -%}
+        <tr><td>{{ s.subject }}</td><td>{{ s.medium }}</td><td class="grade">{{ s.grade }}</td></tr>
+      {% endfor -%}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Summary</h2>
+    <div class="summary">
+      <div class="field"><span class="label">Z-score</span><span class="z">{{ r.z_score }}</span></div>
+      <div class="field"><span class="label">District rank</span><span class="value">{{ r.district_rank }}</span></div>
+      <div class="field"><span class="label">Island rank</span><span class="value">{{ r.island_rank }}</span></div>
+      <div class="field"><span class="label">Outcome</span>
+        <span class="badge {{ 'ok' if r.passed else 'no' }}">{{ r.outcome }}</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>Issued {{ r.issued }} &middot; Reference {{ r.reference }}</footer>
+</body>
+</html>

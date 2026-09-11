@@ -1,22 +1,43 @@
 # configs/run.yaml — single source of run parameters (CLAUDE.md §3.2).
 #
-# M3 (Devmith) owns the `origin:` and `load:` sections. They hold exactly the
-# keys of CLAUDE.md §3.9 and nothing more: M1's loader (common/config.py)
-# rejects any key it does not know, so an extra key here stops the admission
-# service starting.
+# Each section is owned by one member: `admission:` (M1), `estimator:` and
+# `delivery:` (M2), `origin:` and `load:` (M3). Do not edit sections you do not
+# own. Every section holds exactly the keys of CLAUDE.md §3.9 and nothing more:
+# M1's loader (common/config.py) rejects any key it does not know, so an extra
+# key here stops the admission service starting.
 #
 # M3-only parameters therefore live as named defaults in
 # src/aaac/origin/config.py rather than in this file: the health window (5 s,
 # 5 buckets), the ORIGIN_SAMPLE interval (1 s), and the burst share of arrivals
 # (burst_fraction = 0.8, also written into every population file). The results
 # directory comes from AAAC_RESULTS_DIR, which M1 reads too.
-#
-# M1 and M2: add your own top-level sections (`admission:`, `estimator:`,
-# `delivery:`, ...). Do not edit sections you do not own.
 
 seed: 1
 run_id: dev
 mode: none # none | baseline | aaac  (CLAUDE.md §3.4)
+
+admission:
+  w_base_s: 20.0
+  kappa: { HIGH: 1.0, MEDIUM: 1.5, LOW: 2.5 }
+  w_max_s: 60.0
+  alpha_min: 5.0
+  alpha_max: 400.0
+  alpha_increase: 2.0 # additive, tokens/s per control tick
+  alpha_decrease: 0.7 # multiplicative
+  control_tick_s: 1.0
+  target_origin_p95_ms: 400
+  target_origin_err_rate: 0.005
+  max_attempts: 5
+  poll_interval_ms: 2000
+
+estimator:
+  probe_bytes: 65536
+  min_rtt_samples: 5
+  confidence_threshold: 0.60
+  model_path: models/link_classifier.joblib
+
+delivery:
+  budgets_bytes: { full: 460800, reduced: 61440, essential: 6144 }
 
 origin:
   service_time_ms: { dist: lognormal, median: 60, sigma: 0.5 }

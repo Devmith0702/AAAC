@@ -43,6 +43,17 @@ services:
       timeout: 2s
       retries: 10
 
+  # --- M1: admission service -----------------------------------------------
+  # Built from the root Dockerfile, which is still a placeholder.
+  admission:
+    build: .
+    depends_on:
+      - redis
+    environment:
+      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET}
+    ports:
+      - "127.0.0.1:8000:8000"
+
   # --- M3: mock origin -----------------------------------------------------
   origin:
     build:
@@ -111,16 +122,7 @@ services:
       AAAC_NETEM_LOSS: 3%
       AAAC_NETEM_BURST: 32kbit
     command: ["sh", "-c", "netem.sh && sleep infinity"]
-# --- Not mine. Uncomment when M1 and M2 ship; ports are fixed by §3.5. -------
-#
-#  admission:          # M1 - http://admission:8000
-#    build:
-#      context: .
-#      dockerfile: docker/admission.Dockerfile
-#    depends_on: [redis, origin]
-#    environment:
-#      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET}
-#    ports: ["127.0.0.1:8000:8000"]
+# --- Not mine. Uncomment when M2 ships; ports are fixed by §3.5. -------------
 #
 #  delivery:           # M2 - http://delivery:8001
 #    build:

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Examination Result — {{ r.index_no }}</title>
+
+<!-- Sub-resources. A browser fetches each of these separately, so this variant
+     costs round trips as well as bytes. That second cost is one of the two
+     things payload adaptation addresses, and it only shows up in the numbers
+     if the page is structured the way a real page is. -->
+<link rel="preload" as="font" type="font/woff2" href="/static/inter-latin-400.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/static/inter-latin-600.woff2" crossorigin>
+<link rel="stylesheet" href="/static/bootstrap.min.css">
+
+<style>
+/* @font-face lives here rather than in a stylesheet of its own so the font is
+   discoverable from the document. A browser would otherwise find it only after
+   parsing the CSS -- HTML, then CSS, then font, three serial round trips. The
+   preload links above collapse that into the parallel batch, which makes this
+   page slightly CHEAPER than a naive real one. That bias runs against our own
+   result, which is the safe direction. */
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;
+  src:url('/static/inter-latin-400.woff2') format('woff2')}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;
+  src:url('/static/inter-latin-600.woff2') format('woff2')}
+:root{--navy:#0e2b54;--navy-deep:#081833;--gold:#c69e3e}
+body{font-family:'Inter',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f4f6f9}
+.masthead{background:linear-gradient(160deg,var(--navy) 0%,var(--navy-deep) 100%);
+  color:#fff;border-bottom:4px solid var(--gold)}
+.crest{width:96px;height:96px}
+.label-sm{font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:#6c757d;font-weight:600}
+.z-big{font-size:2rem;font-weight:600;color:var(--navy)}
+.grade-cell{font-weight:600;text-align:center;width:6rem}
+</style>
+</head>
+<body>
+
+<div class="masthead py-4">
+  <div class="container">
+    <div class="d-flex align-items-center gap-3">
+      <img class="crest" src="/static/crest.png" width="96" height="96"
+           alt="Examinations authority crest">
+      <div>
+        <h1 class="h4 mb-0">{{ r.exam }}</h1>
+        <p class="mb-0 opacity-75 small">Examination results &middot; {{ r.year }}</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main class="container py-4">
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="label-sm mb-3">Candidate</div>
+      <div class="row g-3">
+        <div class="col-sm-6 col-lg-3">
+          <div class="label-sm">Index number</div><div class="fs-5 fw-semibold">{{ r.index_no }}</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <div class="label-sm">Name</div><div class="fs-5 fw-semibold">{{ r.name }}</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <div class="label-sm">Centre</div><div class="fs-5 fw-semibold">{{ r.centre }}</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <div class="label-sm">District</div><div class="fs-5 fw-semibold">{{ r.district }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="label-sm mb-3">Subject results</div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr><th>Subject</th><th>Medium</th><th class="grade-cell">Grade</th></tr></thead>
+          <tbody>
+          {% for s in r.subjects -%}
+            <tr><td>{{ s.subject }}</td><td>{{ s.medium }}</td>
+                <td class="grade-cell">{{ s.grade }}</td></tr>
+          {% endfor -%}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="label-sm mb-3">Summary</div>
+      <div class="row g-4 align-items-center">
+        <div class="col-auto"><div class="label-sm">Z-score</div><div class="z-big">{{ r.z_score }}</div></div>
+        <div class="col-auto"><div class="label-sm">District rank</div><div class="fs-5 fw-semibold">{{ r.district_rank }}</div></div>
+        <div class="col-auto"><div class="label-sm">Island rank</div><div class="fs-5 fw-semibold">{{ r.island_rank }}</div></div>
+        <div class="col-auto"><div class="label-sm">Outcome</div>
+          <span class="badge rounded-pill fs-6 {{ 'text-bg-success' if r.passed else 'text-bg-danger' }}">{{ r.outcome }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="accordion" id="notes">
+    <div class="accordion-item">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#note1">
+          How grades are awarded
+        </button>
+      </h2>
+      <div id="note1" class="accordion-collapse collapse" data-bs-parent="#notes">
+        <div class="accordion-body small text-muted">
+          Grades are awarded on the published scale. Z-scores are standardised
+          within subject stream and are comparable only inside the same stream
+          and year.
+        </div>
+      </div>
+    </div>
+    <div class="accordion-item">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#note2">
+          Applying for a recount
+        </button>
+      </h2>
+      <div id="note2" class="accordion-collapse collapse" data-bs-parent="#notes">
+        <div class="accordion-body small text-muted">
+          Recount applications close 21 days after release. Quote reference
+          {{ r.reference }} on any correspondence.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer class="container pb-5 text-muted small">
+  Issued {{ r.issued }} &middot; Reference {{ r.reference }}
+</footer>
+
+<script src="/static/bootstrap.bundle.min.js"></script>
+</body>
+</html>
