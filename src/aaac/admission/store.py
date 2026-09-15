@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import asyncio
-import time
-from typing import Protocol, Any
+from typing import Protocol
+
 from aaac.common.classes import AccessClass
+
 
 class TicketData:
     __slots__ = ("state", "attempt", "access_class", "join_seq", "expires_at", "true_class")
@@ -25,10 +27,18 @@ class TicketData:
 
 class QueueStore(Protocol):
     async def next_seq(self) -> int: ...
-    async def create_ticket(self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass, attempt: int, expires_at: float | None = None) -> None: ...
+    async def create_ticket(
+        self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass,
+        attempt: int, expires_at: float | None = None,
+    ) -> None: ...
     async def get_ticket(self, tid: str) -> TicketData | None: ...
-    async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]: ...
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None: ...
+    async def admit_n(
+        self, n: int, now: float, windows_s: dict[AccessClass, float]
+    ) -> list[tuple[str, float]]: ...
+    async def reinsert(
+        self, tid: str, score: int, new_class: AccessClass | None = None,
+        attempt: int | None = None,
+    ) -> None: ...
     async def update_class(self, tid: str, new_class: AccessClass) -> None: ...
     async def position(self, tid: str) -> int: ...
     async def waiting_count(self) -> int: ...
@@ -84,7 +94,8 @@ class RedisQueueStore:
         return await self.r.incr(f"aaac:{self.run_id}:seq")
         
     async def create_ticket(
-        self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass, attempt: int, expires_at: float | None = None
+        self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass,
+        attempt: int, expires_at: float | None = None,
     ) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
         mapping = {
@@ -114,11 +125,18 @@ class RedisQueueStore:
             true_class=AccessClass(int(data[b"true_class"]))
         )
         
-    async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]:
+    async def admit_n(
+        self, n: int, now: float, windows_s: dict[AccessClass, float]
+    ) -> list[tuple[str, float]]:
         if n <= 0:
             return []
         keys = [self.run_id]
-        args = [n, now, windows_s[AccessClass.HIGH], windows_s[AccessClass.MEDIUM], windows_s[AccessClass.LOW]]
+        args = [
+            n, now,
+            windows_s[AccessClass.HIGH],
+            windows_s[AccessClass.MEDIUM],
+            windows_s[AccessClass.LOW],
+        ]
         result = await self._admit_script(keys=keys, args=args)
         
         admitted = []
@@ -126,7 +144,10 @@ class RedisQueueStore:
             admitted.append((result[i].decode(), float(result[i+1].decode())))
         return admitted
         
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
+    async def reinsert(
+        self, tid: str, score: int, new_class: AccessClass | None = None,
+        attempt: int | None = None,
+    ) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
         pipe = self.r.pipeline()
         
@@ -206,7 +227,11 @@ class RedisQueueStore:
         
     async def get_counters(self) -> dict[str, dict[str, int]]:
         raw = await self.r.hgetall(f"aaac:{self.run_id}:counters")
-        res = {"waiting": {"0":0, "1":0, "2":0}, "completed": {"0":0, "1":0, "2":0}, "timed_out": {"0":0, "1":0, "2":0}}
+        res = {
+            "waiting": {"0": 0, "1": 0, "2": 0},
+            "completed": {"0": 0, "1": 0, "2": 0},
+            "timed_out": {"0": 0, "1": 0, "2": 0},
+        }
         for k_b, v_b in raw.items():
             k = k_b.decode()
             v = int(v_b)
@@ -235,7 +260,10 @@ class InMemoryQueueStore:
             self._seq += 1
             return self._seq
             
-    async def create_ticket(self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass, attempt: int, expires_at: float | None = None) -> None:
+    async def create_ticket(
+        self, tid: str, seq: int, true_class: AccessClass, access_class: AccessClass,
+        attempt: int, expires_at: float | None = None,
+    ) -> None:
         async with self._lock:
             self._tickets[tid] = {
                 "state": "WAITING",
@@ -252,7 +280,8 @@ class InMemoryQueueStore:
     async def get_ticket(self, tid: str) -> TicketData | None:
         async with self._lock:
             t = self._tickets.get(tid)
-            if not t: return None
+            if not t:
+                return None
             return TicketData(
                 state=t["state"],
                 attempt=t["attempt"],
@@ -262,7 +291,9 @@ class InMemoryQueueStore:
                 true_class=t["true_class"]
             )
             
-    async def admit_n(self, n: int, now: float, windows_s: dict[AccessClass, float]) -> list[tuple[str, float]]:
+    async def admit_n(
+        self, n: int, now: float, windows_s: dict[AccessClass, float]
+    ) -> list[tuple[str, float]]:
         async with self._lock:
             admitted = []
             to_pop = min(n, len(self._waiting))
@@ -278,7 +309,10 @@ class InMemoryQueueStore:
             self._inflight.sort(key=lambda x: x[0])
             return admitted
             
-    async def reinsert(self, tid: str, score: int, new_class: AccessClass | None = None, attempt: int | None = None) -> None:
+    async def reinsert(
+        self, tid: str, score: int, new_class: AccessClass | None = None,
+        attempt: int | None = None,
+    ) -> None:
         async with self._lock:
             t = self._tickets[tid]
             old_class = str(int(t["class"]))

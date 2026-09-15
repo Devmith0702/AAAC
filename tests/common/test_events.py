@@ -1,8 +1,11 @@
-import pytest
 import asyncio
 import json
 import os
+
+import pytest
+
 from aaac.common.events import EventLogger
+
 
 @pytest.fixture
 def tmp_results(tmp_path):
@@ -25,7 +28,7 @@ async def test_event_logger_flush_on_count(tmp_results):
     
     # The file should exist and have 100 lines
     assert os.path.exists(logger.filepath)
-    with open(logger.filepath, "r") as f:
+    with open(logger.filepath) as f:
         lines = f.readlines()
         assert len(lines) == 100
         
@@ -42,7 +45,7 @@ async def test_event_logger_flush_on_timeout(tmp_results):
     await asyncio.sleep(0.7)
     
     assert os.path.exists(logger.filepath)
-    with open(logger.filepath, "r") as f:
+    with open(logger.filepath) as f:
         lines = f.readlines()
         assert len(lines) == 1
         data = json.loads(lines[0])

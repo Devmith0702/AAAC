@@ -6,8 +6,14 @@
 PY       := .venv/bin/python
 PIP      := .venv/bin/pip
 SEEDS    ?= 1,2,3,4,5
+# Give each run its own id: the admission service and the origin write two
+# separate logs that the analysis pairs by run id (see docker-compose.yml).
 RUN_ID   ?= dev
-MODE     ?= none
+# NOTE: there is deliberately no MODE variable. The run mode lives in
+# configs/run.yaml and nowhere else, because M1's loader reads it from the file
+# and honours no environment override (INTEGRATION-ISSUES.md A8/A10). Passing a
+# mode here would re-mode the origin only, and the two services would run
+# different experiments.
 RESULTS  ?= results
 
 .DEFAULT_GOAL := help
@@ -51,7 +57,7 @@ build: ## Build the container images
 	docker compose build
 
 up: ## Start the testbed (origin, redis, iperf, shaped clients)
-	AAAC_MODE=$(MODE) AAAC_RUN_ID=$(RUN_ID) docker compose up -d --build
+	AAAC_RUN_ID=$(RUN_ID) docker compose up -d --build
 	@echo "Waiting for the origin to answer /origin/health ..."
 	@for i in $$(seq 1 60); do \
 	    curl -sf http://127.0.0.1:8002/origin/health >/dev/null && break; \
@@ -62,7 +68,7 @@ up: ## Start the testbed (origin, redis, iperf, shaped clients)
 down: ## Stop the testbed and remove volumes
 	docker compose down -v
 
-run: up ## Alias for `up` (e.g. `make run MODE=aaac`)
+run: up ## Alias for `up` (mode comes from configs/run.yaml)
 
 stop: down ## Alias for `down`
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
+
+from aaac.admission.store import QueueStore
 from aaac.common.classes import AccessClass, downgrade
 from aaac.common.config import RunConfig
 from aaac.common.events import EventLogger
-from aaac.admission.store import QueueStore
 
 
 async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: RunConfig) -> None:

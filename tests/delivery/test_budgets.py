@@ -20,6 +20,10 @@ import pytest
 
 from aaac.client.fetch import fetch_page
 from aaac.common.classes import AccessClass
+
+# configs/run.yaml -> delivery.budgets_bytes. Read from config rather than
+# hardcoded, so a budget change has to happen in one place.
+from aaac.common.config import get_config
 from aaac.common.tokens import issue_token
 from aaac.delivery import app as delivery_app
 from aaac.delivery.discovery import (
@@ -28,10 +32,6 @@ from aaac.delivery.discovery import (
     inline_style_urls,
 )
 from aaac.delivery.variants import VARIANTS, render, sample_record, variant_cost
-
-# configs/run.yaml -> delivery.budgets_bytes. Read from config rather than
-# hardcoded, so a budget change has to happen in one place.
-from aaac.common.config import get_config
 
 RECORD = sample_record()
 

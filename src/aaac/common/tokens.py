@@ -1,13 +1,16 @@
 from __future__ import annotations
-import os
-import json
-import hmac
-import hashlib
+
 import base64
+import hashlib
+import hmac
+import json
+import os
 import time
 import warnings
 from typing import Any
+
 from aaac.common.classes import AccessClass, variant_for
+
 
 class TokenError(Exception):
     pass
@@ -53,16 +56,16 @@ def verify_token(raw: str) -> dict[str, Any]:
     """Verify and parse an admit token. Raises TokenError."""
     try:
         b64_payload, b64_sig = raw.split(".")
-    except ValueError:
-        raise TokenError("Invalid token format")
+    except ValueError as exc:
+        raise TokenError("Invalid token format") from exc
         
     secret = _get_secret()
     expected_sig = hmac.new(secret, b64_payload.encode('utf-8'), hashlib.sha256).digest()
     
     try:
         sig = _b64url_decode(b64_sig)
-    except Exception:
-        raise TokenError("Invalid signature encoding")
+    except Exception as exc:
+        raise TokenError("Invalid signature encoding") from exc
         
     if not hmac.compare_digest(sig, expected_sig):
         raise TokenError("Invalid token signature")
@@ -70,8 +73,8 @@ def verify_token(raw: str) -> dict[str, Any]:
     try:
         payload_json = _b64url_decode(b64_payload)
         payload = json.loads(payload_json)
-    except Exception:
-        raise TokenError("Invalid payload encoding")
+    except Exception as exc:
+        raise TokenError("Invalid payload encoding") from exc
         
     if payload.get("exp", 0) < time.time():
         raise TokenError("Token expired")

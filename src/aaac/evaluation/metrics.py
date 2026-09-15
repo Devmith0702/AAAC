@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.events import EventLog
 from aaac.evaluation.stats import jains_index
 

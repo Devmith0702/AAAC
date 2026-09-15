@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.population import Client, Population, load
 
 #: The SDK's success label (``aaac.client.sdk.Outcome.COMPLETED``).

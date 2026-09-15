@@ -1,18 +1,23 @@
 # ---------------------------------------------------------------------------
-# STUB — DELETE THIS MODULE WHEN M1 SHIPS src/aaac/common/config.py
+# M3's view of the run configuration. NOT a stub any more.
 #
-# CLAUDE.md §1.4 permits a clearly-marked local stub inside my own package so
-# that the origin service is not blocked on M1. It parses only the top-level run
-# keys and the `origin:` section, both of which M3 owns. When common/config.py
-# lands, delete this file and import the real loader instead; nothing here is
-# meant to survive.
+# This module was a stub standing in for `common/config.py` until M1 shipped it.
+# M1's loader has now landed and is the authority on every key in CLAUDE.md
+# §3.9: `load_run_config()` parses through it, so a file this module accepts is
+# a file the admission service accepts. What survives here is only what M1's
+# config cannot express, and all of it is M3-owned:
+#
+#   - the origin health window / bucket count / sample interval (§4.1)
+#   - `burst_fraction`, the Gaussian/exponential split of arrivals (§4.3)
+#   - `results_dir` and the derived origin event-log path
+#   - the environment overrides the Compose testbed parameterises runs with
+#   - range checks on the shared values (lognormal-only, positive, in-bounds)
+#
+# Those are deliberately absent from configs/run.yaml: M1's loader rejects any
+# key outside §3.9, so putting them in the file stops the admission service
+# starting. See INTEGRATION-ISSUES.md A3.
 # ---------------------------------------------------------------------------
-"""Run-configuration loading for the M3-owned sections (local stub).
-
-Parses the top-level run keys plus ``origin:`` and ``load:``. The origin
-service needs only the former, so ``load`` is optional and absent-by-default
-rather than faked with placeholder numbers.
-"""
+"""Run configuration for the M3-owned sections, layered over M1's loader."""
 
 from __future__ import annotations
 
@@ -23,14 +28,15 @@ from typing import Any
 
 import yaml
 
+from aaac.common import config as common_config
+
 DEFAULT_CONFIG_PATH = Path("configs/run.yaml")
 
 VALID_MODES = ("none", "baseline", "aaac")
 
-# Parameters M3 needs that are deliberately NOT in configs/run.yaml. M1's loader
-# rejects any key outside §3.9, so putting them there stops the admission service
-# starting. They live here as named defaults instead; the parser still honours
-# the key if an agreed section for them is added to run.yaml later.
+# Parameters M3 needs that are deliberately NOT in configs/run.yaml (see the
+# banner). They live here as named defaults; the parser still honours the key if
+# an agreed section for them is added to run.yaml later.
 DEFAULT_HEALTH_WINDOW_S = 5.0  # §4.1: "rolling 5 s window"
 DEFAULT_HEALTH_BUCKETS = 5
 DEFAULT_SAMPLE_INTERVAL_S = 1.0  # §4.1: "ORIGIN_SAMPLE once per second"
@@ -227,7 +233,12 @@ def _parse_load(raw: Any) -> LoadConfig:
 
 
 def parse_run_config(raw: dict[str, Any]) -> RunConfig:
-    """Build a :class:`RunConfig` from an already-parsed YAML mapping."""
+    """Build a :class:`RunConfig` from an already-parsed YAML mapping.
+
+    This is M3's own parsing of the M3-owned sections. It does **not** apply
+    M1's whole-file validation — :func:`load_run_config` does that, because only
+    a real file can be checked against the contract as a whole.
+    """
     mode = str(raw.get("mode", "none"))
     if mode not in VALID_MODES:
         raise ValueError(f"mode: must be one of {VALID_MODES}, got {mode!r}")
@@ -242,6 +253,28 @@ def parse_run_config(raw: dict[str, Any]) -> RunConfig:
     )
 
 
+def _check_against_m1_loader(resolved: Path) -> None:
+    """Fail here if M1's loader would reject this file.
+
+    The admission service is the single writer of the event log, so a file it
+    refuses is a run that cannot happen. Finding that out when the origin starts
+    — rather than after `docker compose up` — is the whole point of this check.
+
+    M1's loader exposes no public path-taking entry point (``get_config()``
+    reads ``AAAC_CONFIG_PATH`` and caches a module-level singleton, which would
+    make the check depend on call order), so the module-private loader is used
+    deliberately. A public ``load_config(path)`` on their side would replace
+    this; raised as A6 in INTEGRATION-ISSUES.md.
+    """
+    try:
+        common_config._load_config_from_file(str(resolved))
+    except Exception as exc:  # noqa: BLE001 — re-raised with context below
+        raise ValueError(
+            f"{resolved}: rejected by M1's loader (aaac.common.config), so the "
+            f"admission service would refuse to start: {exc}"
+        ) from exc
+
+
 def load_run_config(path: str | os.PathLike[str] | None = None) -> RunConfig:
     """Load ``configs/run.yaml``, applying environment overrides.
 
@@ -253,6 +286,9 @@ def load_run_config(path: str | os.PathLike[str] | None = None) -> RunConfig:
         resolved = Path(path)
     else:
         resolved = Path(os.environ.get("AAAC_CONFIG", DEFAULT_CONFIG_PATH))
+
+    _check_against_m1_loader(resolved)
+
     with resolved.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
     if not isinstance(raw, dict):

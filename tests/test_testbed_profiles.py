@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.testbed.profiles import PROFILES, VERIFY_TOLERANCE, profile_for
 from aaac.evaluation.testbed.verify import SERVICE_FOR, mathis_kbps
 

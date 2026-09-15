@@ -1,8 +1,11 @@
 import os
-import pytest
 import time
+
+import pytest
+
 from aaac.common.classes import AccessClass
-from aaac.common.tokens import issue_token, verify_token, TokenError
+from aaac.common.tokens import TokenError, issue_token, verify_token
+
 
 def test_token_round_trip():
     os.environ["AAAC_TOKEN_SECRET"] = "test_secret"

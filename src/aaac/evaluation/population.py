@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.origin.config import LoadConfig, RunConfig, load_run_config
 
 POPULATION_VERSION = 1

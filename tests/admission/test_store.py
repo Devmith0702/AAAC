@@ -1,14 +1,18 @@
-import pytest
 import time
-from aaac.common.classes import AccessClass
+
+import pytest
+
 from aaac.admission.store import InMemoryQueueStore
+from aaac.common.classes import AccessClass
+
 
 @pytest.mark.asyncio
 async def test_in_memory_store_admit_n():
     store = InMemoryQueueStore("test")
     
     await store.create_ticket("t1", await store.next_seq(), AccessClass.HIGH, AccessClass.HIGH, 1)
-    await store.create_ticket("t2", await store.next_seq(), AccessClass.MEDIUM, AccessClass.MEDIUM, 1)
+    await store.create_ticket("t2", await store.next_seq(), AccessClass.MEDIUM,
+                              AccessClass.MEDIUM, 1)
     await store.create_ticket("t3", await store.next_seq(), AccessClass.LOW, AccessClass.LOW, 1)
     
     assert await store.waiting_count() == 3

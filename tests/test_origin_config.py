@@ -1,4 +1,10 @@
-"""Config loading (local stub — see the banner in ``aaac/origin/config.py``)."""
+"""Run configuration: M3's own sections, layered over M1's loader.
+
+``parse_run_config`` is M3's parsing of the M3-owned sections and is tested with
+partial dicts. ``load_run_config`` reads a real file and first puts it through
+M1's loader, so the fixtures it uses carry every §3.9 section — a file missing
+one of them is a file the admission service would refuse to start on.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from aaac.origin.config import (
     CONTRACT_LOAD_KEYS,
@@ -29,6 +36,58 @@ VALID: dict[str, Any] = {
         "queue_limit": 256,
     },
 }
+
+#: The other owners' sections. M1's loader requires all of them to be present,
+#: so any file-level fixture has to carry them; M3 never reads their contents.
+OTHER_OWNERS_SECTIONS: dict[str, Any] = {
+    "admission": {
+        "w_base_s": 20.0,
+        "kappa": {"HIGH": 1.0, "MEDIUM": 1.5, "LOW": 2.5},
+        "w_max_s": 60.0,
+        "alpha_min": 5.0,
+        "alpha_max": 400.0,
+        "alpha_increase": 2.0,
+        "alpha_decrease": 0.7,
+        "control_tick_s": 1.0,
+        "target_origin_p95_ms": 400,
+        "target_origin_err_rate": 0.005,
+        "max_attempts": 5,
+        "poll_interval_ms": 2000,
+    },
+    "estimator": {
+        "probe_bytes": 65536,
+        "min_rtt_samples": 5,
+        "confidence_threshold": 0.60,
+        "model_path": "models/link_classifier.joblib",
+    },
+    "delivery": {"budgets_bytes": {"full": 460800, "reduced": 61440, "essential": 6144}},
+}
+
+LOAD_SECTION: dict[str, Any] = {
+    "n_clients": 20000,
+    "scale_factor": 10,
+    "burst_center_s": 30,
+    "burst_sigma_s": 15,
+    "tail_decay_s": 600,
+    "class_mix": {"HIGH": 0.25, "MEDIUM": 0.40, "LOW": 0.35},
+    "abandon_after_s": 900,
+}
+
+
+def write_contract_file(tmp_path: Path, **overrides: Any) -> Path:
+    """A complete §3.9 run.yaml — the shape every service has to accept."""
+    raw: dict[str, Any] = {
+        "seed": VALID["seed"],
+        "run_id": VALID["run_id"],
+        "mode": VALID["mode"],
+        "origin": copy.deepcopy(VALID["origin"]),
+        "load": copy.deepcopy(LOAD_SECTION),
+        **copy.deepcopy(OTHER_OWNERS_SECTIONS),
+    }
+    raw.update(overrides)
+    path = tmp_path / "run.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return path
 
 
 def test_parses_a_valid_configuration() -> None:
@@ -97,10 +156,7 @@ def test_a_missing_required_key_is_refused() -> None:
 
 
 def test_environment_overrides_are_applied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    import yaml
-
-    config_file = tmp_path / "run.yaml"
-    config_file.write_text(yaml.safe_dump(VALID), encoding="utf-8")
+    config_file = write_contract_file(tmp_path)
 
     monkeypatch.setenv("AAAC_SEED", "7")
     monkeypatch.setenv("AAAC_RUN_ID", "r99")
@@ -108,6 +164,24 @@ def test_environment_overrides_are_applied(monkeypatch: pytest.MonkeyPatch, tmp_
 
     cfg = load_run_config(config_file)
     assert (cfg.seed, cfg.run_id, cfg.mode) == (7, "r99", "baseline")
+
+
+def test_a_file_m1s_loader_rejects_is_refused_here_too(tmp_path: Path) -> None:
+    # The admission service is the single writer of the event log, so a file it
+    # refuses is a run that cannot happen. M3 fails on it at load time rather
+    # than after `docker compose up`.
+    config_file = write_contract_file(tmp_path, evaluation={"extra_key": 1})
+    with pytest.raises(ValueError, match="M1's loader"):
+        load_run_config(config_file)
+
+
+def test_a_file_missing_another_owners_section_is_refused(tmp_path: Path) -> None:
+    raw = yaml.safe_load(write_contract_file(tmp_path).read_text(encoding="utf-8"))
+    del raw["admission"]
+    path = tmp_path / "no-admission.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="M1's loader"):
+        load_run_config(path)
 
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "run.yaml"
@@ -126,8 +200,6 @@ def test_repository_config_m3_sections_hold_only_contract_keys() -> None:
     # M1's loader rejects unknown keys, so an M3-only key added to `origin:` or
     # `load:` stops the admission service starting. Those parameters live as
     # defaults in aaac/origin/config.py instead.
-    import yaml
-
     raw = yaml.safe_load(REPO_CONFIG.read_text(encoding="utf-8"))
     assert set(raw["origin"]) <= CONTRACT_ORIGIN_KEYS
     assert set(raw["load"]) <= CONTRACT_LOAD_KEYS

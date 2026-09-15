@@ -1,8 +1,10 @@
 from __future__ import annotations
-import os
-import json
-import time
+
 import asyncio
+import contextlib
+import json
+import os
+import time
 from typing import Any
 
 # Allowed event vocabulary
@@ -79,9 +81,7 @@ class EventLogger:
         self._closing = True
         if self._flush_task:
             self._flush_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._flush_task
-            except asyncio.CancelledError:
-                pass
         async with self._lock:
             await self._flush_unlocked()

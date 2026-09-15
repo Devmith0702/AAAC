@@ -1,17 +1,17 @@
-import pytest
-import asyncio
-import random
-import time
 import json
 import os
+import random
+import time
 from collections import defaultdict
 
-from aaac.common.config import get_config, reset_config
-from aaac.common.classes import AccessClass
-from aaac.common.events import EventLogger
-from aaac.admission.store import InMemoryQueueStore
-from aaac.admission.controller import AdmissionController
+import pytest
+
 from aaac.admission.requeue import handle_timeout
+from aaac.admission.store import InMemoryQueueStore
+from aaac.common.classes import AccessClass
+from aaac.common.config import get_config, reset_config
+from aaac.common.events import EventLogger
+
 
 @pytest.fixture
 def base_config():
@@ -72,7 +72,7 @@ async def test_invariant_i1_position_non_increasing(base_config):
             
     logger = DummyLogger()
     
-    for step in range(10):
+    for _step in range(10):
         # Admit 10 tickets
         admitted = await store.admit_n(10, now, windows)
         
@@ -109,10 +109,13 @@ async def test_invariant_i1_position_non_increasing(base_config):
     # 3. Assert I1
     for tid, history in position_history.items():
         # In AAAC mode, a ticket's position can temporarily drop to 0 when admitted, 
-        # and then go to some value > 0 if it times out and is re-inserted behind other re-inserted tickets.
+        # and then go to some value > 0 if it times out and is re-inserted behind
+        # other re-inserted tickets.
         # However, the number of unresolved tickets ahead of it NEVER increases.
         # Thus, its position never exceeds its initial position.
-        assert max(history) <= history[0], f"I1 VIOLATION: Ticket {tid} position exceeded initial position!"
+        assert max(history) <= history[0], (
+            f"I1 VIOLATION: Ticket {tid} position exceeded initial position!"
+        )
 
 
 
@@ -146,7 +149,9 @@ async def test_invariant_i2_class_never_upgrades(base_config):
     # Simulate 10 timeouts
     for _ in range(10):
         # Move to inflight
-        await store.admit_n(1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10})
+        await store.admit_n(
+            1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10}
+        )
         await store.expire_inflight(time.time() + 100)
         
         # Timeout
@@ -158,7 +163,10 @@ async def test_invariant_i2_class_never_upgrades(base_config):
     # Assert monotonic degradation
     # IntEnum: HIGH=0, MEDIUM=1, LOW=2. So values should be non-decreasing numerically
     for i in range(1, len(class_history)):
-        assert class_history[i].value >= class_history[i-1].value, f"I2 VIOLATION: Upgraded from {class_history[i-1].name} to {class_history[i].name}"
+        assert class_history[i].value >= class_history[i-1].value, (
+            f"I2 VIOLATION: Upgraded from {class_history[i-1].name} "
+            f"to {class_history[i].name}"
+        )
 
 
 @pytest.mark.asyncio
@@ -183,23 +191,32 @@ async def test_invariant_i6_log_reconciliation(base_config):
     # 1. Join -> WAITING
     tid = "i6_ticket"
     await store.create_ticket(tid, 1, AccessClass.HIGH, AccessClass.HIGH, 1)
-    await logger.log("JOIN", ticket_id=tid, access_class=int(AccessClass.HIGH), true_class=int(AccessClass.HIGH), attempt=1, position=0)
+    await logger.log("JOIN", ticket_id=tid, access_class=int(AccessClass.HIGH),
+                     true_class=int(AccessClass.HIGH), attempt=1, position=0)
     
     # 2. ADMIT -> ADMITTED
-    admitted = await store.admit_n(1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10})
-    await logger.log("ADMIT", ticket_id=tid, access_class=int(AccessClass.HIGH), true_class=int(AccessClass.HIGH), attempt=1, position=0)
+    await store.admit_n(
+        1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10}
+    )
+    await logger.log("ADMIT", ticket_id=tid, access_class=int(AccessClass.HIGH),
+                     true_class=int(AccessClass.HIGH), attempt=1, position=0)
     
     # 3. TIMEOUT -> WAITING
     await store.expire_inflight(time.time() + 100)
     await handle_timeout(tid, store, logger, cfg)
     
     # 4. ADMIT again -> ADMITTED
-    admitted = await store.admit_n(1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10})
-    await logger.log("ADMIT", ticket_id=tid, access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=2, position=0)
+    await store.admit_n(
+        1, time.time(), {AccessClass.HIGH: 10, AccessClass.MEDIUM: 10, AccessClass.LOW: 10}
+    )
+    await logger.log("ADMIT", ticket_id=tid, access_class=int(AccessClass.MEDIUM),
+                     true_class=int(AccessClass.HIGH), attempt=2, position=0)
     
     # 5. COMPLETE -> COMPLETED
     await store.complete(tid, "COMPLETED")
-    await logger.log("COMPLETE", ticket_id=tid, access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=2, bytes=100, duration_ms=50, variant="reduced")
+    await logger.log("COMPLETE", ticket_id=tid, access_class=int(AccessClass.MEDIUM),
+                     true_class=int(AccessClass.HIGH), attempt=2, bytes=100,
+                     duration_ms=50, variant="reduced")
     
     await logger.close()
     
@@ -208,7 +225,7 @@ async def test_invariant_i6_log_reconciliation(base_config):
     assert os.path.exists(log_path)
     
     events = []
-    with open(log_path, "r") as f:
+    with open(log_path) as f:
         for line in f:
             events.append(json.loads(line))
             
@@ -216,7 +233,10 @@ async def test_invariant_i6_log_reconciliation(base_config):
     expected_sequence = ["JOIN", "ADMIT", "TIMEOUT", "DOWNGRADE", "REQUEUE", "ADMIT", "COMPLETE"]
     actual_sequence = [e["event"] for e in events if e.get("ticket_id") == tid]
     
-    assert actual_sequence == expected_sequence, f"I6 VIOLATION: Event sequence mismatch.\nExpected: {expected_sequence}\nActual: {actual_sequence}"
+    assert actual_sequence == expected_sequence, (
+        f"I6 VIOLATION: Event sequence mismatch.\n"
+        f"Expected: {expected_sequence}\nActual: {actual_sequence}"
+    )
     
     # Clean up
     os.remove(log_path)

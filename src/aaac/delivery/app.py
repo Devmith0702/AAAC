@@ -21,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-from pathlib import Path
 from typing import NamedTuple
 
 import httpx
@@ -164,7 +163,9 @@ async def fetch_record(index: str) -> dict:
         try:
             r = await client.get(url, params={"index": index})
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"origin unreachable: {exc}")
+            raise HTTPException(
+                status_code=502, detail=f"origin unreachable: {exc}"
+            ) from exc
     if r.status_code == 503:
         raise HTTPException(status_code=503, detail="origin shedding load")
     if r.status_code != 200:
@@ -183,7 +184,7 @@ async def result(
     except TokenError as exc:
         # 401 for a bad or expired signature. No detail about which, and no
         # fallback to a default variant: an unverifiable token gets nothing.
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     variant = payload.get("var")
     if variant not in VARIANTS:

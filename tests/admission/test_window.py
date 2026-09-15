@@ -8,11 +8,12 @@ These tests verify the core invariants of the window module:
 5. weighted_mean_window() correctly weights by waiting ticket counts
 """
 from __future__ import annotations
+
 import pytest
+
+from aaac.admission.window import weighted_mean_window, window_for, windows_for_all
 from aaac.common.classes import AccessClass
 from aaac.common.config import AdmissionConfig
-from aaac.admission.window import window_for, windows_for_all, weighted_mean_window
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — mirror the values from configs/run.yaml

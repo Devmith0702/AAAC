@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from aaac.common.classes import AccessClass
 from aaac.evaluation import synth
-from aaac.evaluation.access_class import AccessClass
 from aaac.evaluation.events import EventLog
 from aaac.evaluation.falsification import Verdict, evaluate
 from aaac.evaluation.metrics import RunMetrics, compute

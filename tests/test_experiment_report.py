@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
+from aaac.common.classes import AccessClass
 from aaac.evaluation import plots, report, synth
-from aaac.evaluation.access_class import AccessClass
 from aaac.evaluation.events import EventLog
 from aaac.evaluation.experiment import (
     ComposeRunner,

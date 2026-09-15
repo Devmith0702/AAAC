@@ -11,9 +11,17 @@ buried.
 > Project-level context is in [`PROJECT.md`](./PROJECT.md). The pre-registered
 > falsification rule is in `src/aaac/evaluation/README.md`.
 
-**State:** **223 tests passing in ~4 s** across 16 test files. `ruff` and `mypy`
-clean. No test touches the network, Docker or Redis. M1's and M2's code exists on
-their branches but is not yet merged; issues found reading it are in
+**State:** **411 tests passing in ~12 s** across the whole merged repository,
+with `ruff` and `mypy` clean over every package. No unit test touches the
+network, Docker or Redis.
+
+All three branches are merged into `dev`, both stubs are resolved (§5), and all
+three services are wired into `docker-compose.yml` and have been run end to end
+— in one process over loopback, and as built containers against real Redis. The
+full analysis chain also runs at scale on generated data (20,000 clients ×
+3 modes × 5 seeds → metrics, statistics, figures, report). A system-level
+account of all of it is in [`SYSTEM.md`](./SYSTEM.md); cross-package issues,
+including the schema mismatch that first end-to-end run exposed, are in
 [`INTEGRATION-ISSUES.md`](./INTEGRATION-ISSUES.md).
 
 ---
@@ -33,14 +41,33 @@ Several design decisions below exist only to make the second rule *structural*
 rather than a matter of discipline — a promise you cannot break is better than one
 you have to remember.
 
+**Rule 1 was suspended once, deliberately, and it is recorded here rather than
+left to a diff.** After the merge the repository-wide `ruff` and `mypy` runs
+reported 97 and 6 findings in M1's and M2's packages. M3 reported them rather
+than patching them; the project owner then instructed that they be fixed, and
+they were — import order, unused names, line length, `raise ... from`,
+`contextlib.suppress`, explicit `zip(strict=)`, `StrEnum`, and three type
+annotations. **None of the changes alters behaviour**, and the full suite passed
+before and after. Two substantive cross-package changes were also made at the
+same instruction: M3's origin record was extended so M2's templates can render
+it (`INTEGRATION-ISSUES.md` A9), and `jinja2` — which M2 imports but no branch
+declared — was added to `pyproject.toml`. Anyone weighing M3's independence
+should know the evaluator's hands were in the other two packages to this extent,
+and no further.
+
 ### Environment
 
 | | |
 |---|---|
 | Python | 3.11.14 (venv at `.venv`; system default is 3.14, so 3.11 is pinned explicitly) |
-| Runtime deps | fastapi 0.141, pydantic 2.13, httpx 0.28, uvicorn, pyyaml, pandas 3.0, matplotlib 3.11 |
+| Runtime deps (M3) | fastapi 0.141, pydantic 2.13, httpx 0.28, uvicorn, pyyaml, pandas 3.0, matplotlib 3.11 |
+| Runtime deps (merged) | redis, lightgbm 4.7.0, scikit-learn, joblib, jinja2 — M1's and M2's, installed by the same `pip install -e ".[dev]"` |
 | Host | macOS + Docker Desktop — containers run in a Linux VM (see §2.6) |
 | Quality | pytest, ruff, mypy (non-strict) |
+
+On macOS, LightGBM needs OpenMP at import time: without `brew install libomp`
+its dylib fails to load and M2's two estimator test files cannot be collected.
+The containers are Linux and unaffected.
 
 `pandas` and `matplotlib` are named in the contract's stack table. `pyyaml` is not,
 but `configs/run.yaml` is mandated by the layout, so a YAML parser is implied —
@@ -59,7 +86,7 @@ service_time.py  seeded lognormal draw
 records.py       synthetic index -> name / subject / grade record
 health.py        rolling-window p99 and error rate, O(1) read
 sinks.py         EventSink protocol + JSONL writer for ORIGIN_SAMPLE
-config.py        STUB run-config loader (delete when M1 ships common/config.py)
+config.py        run config: M3's view over M1's common/config.py (§5)
 __main__.py      uvicorn entry point, binds 0.0.0.0:8002
 ```
 
@@ -317,8 +344,24 @@ non-optional rather than a nicety, and it is a limitations-section entry. Nothin
 in the testbed is Docker-Desktop-specific, so moving to a Linux host later requires
 no code change.
 
-**Not yet verified end to end.** Docker Desktop is now available (29.4.3,
-linux/arm64), but `make up` + `make verify-testbed` has not yet been run.
+**Now confirmed, and it blocks the gate.** The stack builds and runs under
+Docker Desktop 29.4.3, but all three shaped client containers exit 1 at startup:
+
+    Error: Unknown device type.
+    netem.sh: FATAL: could not create ifb0. The ifb kernel module is unavailable
+        in this kernel (common under Docker Desktop).
+
+This is §2.1's loud failure behaving exactly as intended — a container that
+cannot shape downstream never reaches the load generator — and it means
+`make verify-testbed` cannot run on this machine: it reports `service
+"client-high" is not running`. The other four services (redis, origin, delivery,
+admission) come up and serve normally, so everything except link shaping can be
+exercised here.
+
+Two ways forward, and the choice belongs in the report rather than in a flag:
+run the testbed on a Linux host where `ifb` can be loaded, or re-run with
+`AAAC_NETEM_DIRECTION=egress` and state plainly that downstream was unshaped and
+the result is therefore **not** a valid measurement of the completion gap.
 
 ---
 
@@ -588,18 +631,33 @@ as working software:
 
 ---
 
-## 5. Local stubs — scheduled for deletion
+## 5. Local stubs — retired at the merge
 
-Both carry a banner at the top of the file.
+Both stubs existed so M3 was not blocked on M1. M1's package has landed, and both
+are now resolved.
 
-| File | Stands in for | Delete when |
+| File | Stood in for | Outcome |
 |---|---|---|
-| `origin/config.py` | `common/config.py` | M1 ships the real loader |
-| `evaluation/access_class.py` | `common/classes.py` | M1 ships the real enum |
+| `evaluation/access_class.py` | `common/classes.py` | **Deleted.** |
+| `origin/config.py` | `common/config.py` | **Kept as M3's view over M1's loader.** |
 
-`access_class.py` transcribes the contract's enum **verbatim**. If the real one ever
-differs, the contract has been broken — that is a conversation, not an edit to the
-stub.
+`access_class.py` transcribed the contract's enum verbatim, and the real one
+agreed value for value — the contract held. Deleting it also removed a defect
+that only existed because the stub existed: the load generator was passing
+`evaluation.access_class.AccessClass` into M2's `run_client`, which is typed for
+`common.classes.AccessClass`. Two structurally identical enums are still two
+types, and that call is M3's only route into M2's SDK.
+
+`origin/config.py` could not simply be deleted. M1's `RunConfig` has no health
+window, no bucket count, no sample interval, no `burst_fraction`, no
+`results_dir`, no `AAAC_*` run overrides and no range checks, and all of those
+are M3's. So the module survives with the stub banner removed: `load_run_config()`
+now parses **through** `common/config.py`, which makes M1's loader the authority
+on every §3.9 key. A file M3 accepts is a file the admission service accepts, and
+a file M1 would reject fails at load time with a message saying so rather than
+at `docker compose up`. What remains M3-owned is only what M1's config cannot
+express. See `INTEGRATION-ISSUES.md` A6 for the one wart: M1 exposes no public
+path-taking loader, so the check reaches for a module-private function.
 
 ---
 
@@ -630,11 +688,10 @@ it. See `INTEGRATION-ISSUES.md` A3.
 | | Blocked on |
 |---|---|
 | Testbed verified end to end | Nothing — Docker is available; `make up` + `make verify-testbed` not yet run |
-| Admission and delivery services in `docker-compose.yml` | Merge of M1's and M2's branches |
-| `ComposeRunner` | Merge, plus the compose wiring above |
-| Stage 1 — collapse reproduced and measured | Testbed verification, merge |
+| Images built and run | Nothing — the compose file parses, but no image has been built yet |
+| `ComposeRunner` | Nothing structural now that the services are wired; needs writing, and the mode matrix needs `INTEGRATION-ISSUES.md` A8 |
+| Stage 1 — collapse reproduced and measured | Testbed verification, first real run |
 | Stage 2 — Δ under the access-blind baseline | `INTEGRATION-ISSUES.md` A1 and A2 |
-| Retiring the `config.py` / `access_class.py` stubs | Merge |
 | `contract-guard`, `result-integrity`, `testbed-verify` skills | Awaiting review of each `SKILL.md`; M2 already has a `contract-guard` skill on its branch |
 | Sensitivity sweep (`class_mix` LOW at 0.20/0.35/0.50, `w_base_s` at 10/20/40) | Main result must exist first |
 

@@ -1,14 +1,21 @@
-import pytest
-import asyncio
 import math
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from aaac.common.classes import AccessClass
-from aaac.common.config import AdmissionConfig, LoadConfig, RunConfig, EstimatorConfig, DeliveryConfig, OriginConfig
-from aaac.common.events import EventLogger
-from aaac.admission.store import InMemoryQueueStore
+import pytest
+
 from aaac.admission.controller import AdmissionController
+from aaac.admission.store import InMemoryQueueStore
 from aaac.admission.window import weighted_mean_window
+from aaac.common.classes import AccessClass
+from aaac.common.config import (
+    AdmissionConfig,
+    DeliveryConfig,
+    EstimatorConfig,
+    LoadConfig,
+    OriginConfig,
+    RunConfig,
+)
+from aaac.common.events import EventLogger
 
 
 @pytest.fixture
@@ -31,10 +38,14 @@ def mock_cfg():
             max_attempts=5,
             poll_interval_ms=2000,
         ),
-        estimator=EstimatorConfig(probe_bytes=1, min_rtt_samples=1, confidence_threshold=0.6, model_path=""),
+        estimator=EstimatorConfig(probe_bytes=1, min_rtt_samples=1,
+                                  confidence_threshold=0.6, model_path=""),
         delivery=DeliveryConfig(budgets_bytes={}),
         origin=OriginConfig(service_time_ms={}, concurrency_limit=64, queue_limit=256),
-        load=LoadConfig(n_clients=10, scale_factor=1, burst_center_s=1, burst_sigma_s=1, tail_decay_s=1, class_mix={"HIGH": 0.33, "MEDIUM": 0.33, "LOW": 0.34}, abandon_after_s=1)
+        load=LoadConfig(n_clients=10, scale_factor=1, burst_center_s=1, burst_sigma_s=1,
+                        tail_decay_s=1,
+                        class_mix={"HIGH": 0.33, "MEDIUM": 0.33, "LOW": 0.34},
+                        abandon_after_s=1)
     )
 
 @pytest.fixture
@@ -166,4 +177,6 @@ async def test_invariant_i3_in_flight_le_c_max(controller, store, mock_cfg):
         
         # INVARIANT I3 assertion
         if c_max != float('inf'):
-            assert in_flight <= c_max, f"Tick {tick}: in_flight ({in_flight}) exceeded C_max ({c_max})"
+            assert in_flight <= c_max, (
+                f"Tick {tick}: in_flight ({in_flight}) exceeded C_max ({c_max})"
+            )

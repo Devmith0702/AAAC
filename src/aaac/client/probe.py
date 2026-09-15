@@ -143,7 +143,7 @@ async def run_probe(
             )
         return ProbeResult(0, 0.0, False, type(exc).__name__)
 
-    if first_byte_at is None or received == 0:
+    if first_byte_at is None or last_byte_at is None or received == 0:
         return ProbeResult(0, 0.0, False, "empty response")
 
     duration_ms = max((last_byte_at - first_byte_at) * 1000.0, 0.001)

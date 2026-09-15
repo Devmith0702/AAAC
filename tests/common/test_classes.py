@@ -1,5 +1,6 @@
 from aaac.common.classes import AccessClass, downgrade, variant_for
 
+
 def test_downgrade():
     assert downgrade(AccessClass.HIGH) == AccessClass.MEDIUM
     assert downgrade(AccessClass.MEDIUM) == AccessClass.LOW

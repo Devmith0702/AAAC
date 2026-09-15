@@ -1,8 +1,11 @@
 from __future__ import annotations
+
 import os
-import yaml
 from dataclasses import dataclass
 from typing import Literal
+
+import yaml
+
 
 @dataclass(frozen=True)
 class AdmissionConfig:
@@ -63,10 +66,12 @@ def _validate_keys(data: dict, allowed: set, path: str):
         raise ValueError(f"Unknown config keys in {path}: {unknown}")
 
 def _load_config_from_file(filepath: str) -> RunConfig:
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         data = yaml.safe_load(f)
         
-    _validate_keys(data, {"run_id", "mode", "seed", "admission", "estimator", "delivery", "origin", "load"}, "root")
+    _validate_keys(data, {
+        "run_id", "mode", "seed", "admission", "estimator", "delivery", "origin", "load"
+    }, "root")
     
     _validate_keys(data["admission"], {
         "w_base_s", "kappa", "w_max_s", "alpha_min", "alpha_max", 

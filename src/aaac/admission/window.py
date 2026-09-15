@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from aaac.common.classes import AccessClass
 from aaac.common.config import AdmissionConfig
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from enum import IntEnum
 from typing import Literal
+
 
 class AccessClass(IntEnum):
     HIGH = 0

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.events import EventLog, LogIntegrityError
 from aaac.evaluation.metrics import build_traces, compute, quantile
 

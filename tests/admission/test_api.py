@@ -5,19 +5,18 @@ No Redis or network required — all tests wire InMemoryQueueStore directly.
 """
 from __future__ import annotations
 
-import pytest
-import time
-from fastapi.testclient import TestClient
-
-from aaac.admission.api import app
-import aaac.admission.api as api
-from aaac.admission.store import InMemoryQueueStore
-from aaac.common.config import get_config
-from aaac.common.events import EventLogger
-from aaac.admission.controller import AdmissionController
-from aaac.common.classes import AccessClass
 from unittest.mock import AsyncMock
 
+import pytest
+from fastapi.testclient import TestClient
+
+import aaac.admission.api as api
+from aaac.admission.api import app
+from aaac.admission.controller import AdmissionController
+from aaac.admission.store import InMemoryQueueStore
+from aaac.common.classes import AccessClass
+from aaac.common.config import get_config
+from aaac.common.events import EventLogger
 
 # ---------------------------------------------------------------------------
 # Fixture: wire in-memory store so tests don't need Redis or lifespan
@@ -213,8 +212,9 @@ async def test_i2_real_downgrade_then_upgrade_attempt_rejected():
     attempt bump. This test goes through a real timeout cycle so the downgrade
     path (handle_timeout → reinsert with new_class) is exercised.
     """
-    from aaac.admission.requeue import handle_timeout
     import time as _time
+
+    from aaac.admission.requeue import handle_timeout
 
     store = api.store
     cfg = api.cfg
@@ -335,9 +335,10 @@ async def test_estimate_class_monotone_across_timeout_sequence():
     Uses a single-use TestClient (not the context-manager form) so that async
     store awaits can interleave with HTTP calls without mixing sync/async contexts.
     """
+    import time as _time
+
     from aaac.admission.requeue import handle_timeout
     from aaac.common.config import get_config
-    import time as _time
 
     cfg = get_config()
     store = api.store

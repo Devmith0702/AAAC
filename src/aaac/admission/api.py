@@ -17,29 +17,26 @@ Design decisions implemented (see README / task spec for context):
       and simply never wait. This preserves client mode-blindness (required by M2).
 """
 import asyncio
+import json
 import logging
-import math
 import os
 import time
-import json
 import uuid
 from contextlib import asynccontextmanager
+from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from aaac.common.config import get_config
-from aaac.common.classes import AccessClass
-from aaac.common.schemas import LinkEstimate, TicketStatus
-from aaac.common.events import EventLogger
-from aaac.common.tokens import issue_token
-from aaac.admission.store import InMemoryQueueStore, RedisQueueStore, QueueStore
 from aaac.admission.controller import AdmissionController
+from aaac.admission.store import InMemoryQueueStore, QueueStore, RedisQueueStore
 from aaac.admission.window import window_for
-
-
-
+from aaac.common.classes import AccessClass
+from aaac.common.config import get_config
+from aaac.common.events import EventLogger
+from aaac.common.schemas import LinkEstimate, TicketStatus
+from aaac.common.tokens import issue_token
 
 log = logging.getLogger(__name__)
 
@@ -170,7 +167,6 @@ async def queue_join(req: JoinRequest):
         # We pass a large window dict so it won't time out.
         windows = {cls: _NONE_MODE_WINDOW_S for cls in AccessClass}
         await store.admit_n(1, time.time(), windows)
-        admit_token = issue_token(tid, AccessClass.HIGH, 1, _NONE_MODE_WINDOW_S)
         await logger.log(
             "JOIN",
             ticket_id=tid,
@@ -304,7 +300,12 @@ async def queue_status(ticket_id: str):
 
     return TicketStatus(
         ticket_id=ticket_id,
-        state=ticket.state,
+        # The store keeps state as a plain str; TicketStatus pins it to the
+        # contract's closed set. Cast rather than widen the schema.
+        state=cast(
+            Literal["WAITING", "ADMITTED", "COMPLETED", "EXPIRED", "ABANDONED"],
+            ticket.state,
+        ),
         position=position,
         attempt=ticket.attempt,
         access_class=ticket.access_class,

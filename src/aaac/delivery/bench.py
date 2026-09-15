@@ -24,13 +24,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import statistics
 import time
 
 import httpx
-
-from aaac.common.classes import AccessClass
-from aaac.common.tokens import issue_token
 
 
 async def _worker(
@@ -62,10 +60,8 @@ async def measure(
     counts = {"ok": 0, "errors": 0, "bytes": 0}
 
     # Warm up so the first request's import/allocation cost is not counted.
-    try:
+    with contextlib.suppress(httpx.HTTPError):
         await client.get(path)
-    except httpx.HTTPError:
-        pass
 
     started = time.perf_counter()
     deadline = started + seconds
@@ -94,7 +90,6 @@ async def measure(
 
 
 async def run(args) -> None:
-    token = issue_token("bench", AccessClass.HIGH, 1, ttl_s=3600)
     paths = [
         ("/probe/65536", "probe payload (C1)"),
         ("/static/bootstrap.min.css", "largest sub-resource, 232 KB"),
@@ -132,8 +127,8 @@ async def run(args) -> None:
     static_rps = min(r["rps"] for _, r in results if "sub-resource" in _ or "crest" in _)
     print()
     print("  Headroom against the origin")
-    print(f"    origin concurrency_limit          64 concurrent requests")
-    print(f"    a `full` client costs             1 document + 5 sub-resources")
+    print("    origin concurrency_limit          64 concurrent requests")
+    print("    a `full` client costs             1 document + 5 sub-resources")
     print(f"    delivery sustains                 {static_rps:,.0f} static req/s")
     print(f"    -> full-variant clients/s         {static_rps/5:,.0f}")
     print()

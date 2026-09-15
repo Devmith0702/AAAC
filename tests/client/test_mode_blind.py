@@ -79,11 +79,13 @@ def test_client_source_never_branches_on_mode():
                 # model_dump(mode="json") is pydantic's serialisation format,
                 # not the run mode.
                 offenders.append(f"{path.name}: keyword mode= (check it)")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value in MODE_NAMES and id(node) not in docstrings:
-                    offenders.append(
-                        f"{path.name}:{node.lineno}: literal {node.value!r}"
-                    )
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value in MODE_NAMES
+                and id(node) not in docstrings
+            ):
+                offenders.append(f"{path.name}:{node.lineno}: literal {node.value!r}")
 
     offenders = [o for o in offenders if "keyword mode=" not in o]
     assert offenders == [], "client branches on mode:\n" + "\n".join(offenders)

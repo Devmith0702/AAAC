@@ -127,7 +127,7 @@ def report(y_true: np.ndarray, y_pred: np.ndarray, label: str) -> dict:
     print(f"optimistic errors   {opt:.4f}   <-- judged better than reality: THE number")
     print(f"LOW -> HIGH rate    {l2h:.4f}   (near zero by construction: far apart)")
     print("per-class recall    " + "  ".join(
-        f"{n}={r:.3f}" for n, r in zip(CLASS_NAMES, recall)))
+        f"{n}={r:.3f}" for n, r in zip(CLASS_NAMES, recall, strict=True)))
     print("\nconfusion matrix (rows = true, cols = predicted)")
     print(f"{'':>8}" + "".join(f"{n:>9}" for n in CLASS_NAMES))
     for i, name in enumerate(CLASS_NAMES):
@@ -138,7 +138,7 @@ def report(y_true: np.ndarray, y_pred: np.ndarray, label: str) -> dict:
         "mean_cost": mean_cost,
         "low_to_high_rate": l2h,
         "optimistic_error_rate": opt,
-        "recall": {n: float(r) for n, r in zip(CLASS_NAMES, recall)},
+        "recall": {n: float(r) for n, r in zip(CLASS_NAMES, recall, strict=True)},
         "confusion_matrix": cm.tolist(),
     }
 
@@ -170,7 +170,9 @@ def train(n: int = 12000, seed: int = 1) -> dict:
     # instead, which is what infer.py validates against.
     model.fit(X_tr, y_tr)
 
-    proba = model.predict_proba(X_te)
+    # asarray: LightGBM's return type is a union that includes `list`, which
+    # has no `.max()` and is not what cost_sensitive_predict accepts.
+    proba = np.asarray(model.predict_proba(X_te))
 
     # Both decision rules, side by side. The comparison IS the argument: the
     # cost-sensitive rule should trade a little accuracy for a large drop in

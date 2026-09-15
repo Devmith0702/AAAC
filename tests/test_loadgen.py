@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.loadgen import (
     EXCEPTION,
     UNRECOGNISED,

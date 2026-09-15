@@ -35,7 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 
-from aaac.evaluation.access_class import AccessClass  # noqa: E402
+from aaac.common.classes import AccessClass  # noqa: E402
 from aaac.evaluation.experiment import ExperimentResult  # noqa: E402
 from aaac.evaluation.metrics import RunMetrics  # noqa: E402
 from aaac.evaluation.stats import mean_ci_t  # noqa: E402

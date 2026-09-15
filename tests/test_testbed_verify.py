@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.testbed.profiles import PROFILES
 from aaac.evaluation.testbed.verify import (
     Check,

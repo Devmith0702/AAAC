@@ -40,9 +40,9 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable
+from enum import StrEnum
 
 import httpx
 from pydantic import ValidationError
@@ -68,7 +68,7 @@ MAX_CONSECUTIVE_ADMISSION_FAILURES = 5
 MIN_POLL_INTERVAL_MS = 50.0
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """How one client's session ended.
 
     ADMISSION_UNAVAILABLE is deliberately NOT a timeout and NOT an abandonment.
@@ -188,19 +188,25 @@ async def run_client(
     try:
         # --- 1. join ------------------------------------------------------
         try:
-            response = await adm.post(
+            # Its own name: the poll loop below binds `response` to the
+            # optional response `timed_poll` returns, and reusing one variable
+            # for both makes the non-optional join result look nullable.
+            join_response = await adm.post(
                 f"{admission_base.rstrip('/')}/queue/join",
                 json={"client_id": client_id, "true_class": int(true_class)},
             )
         except httpx.HTTPError as exc:
             return finish(Outcome.ADMISSION_UNAVAILABLE, error=f"join: {exc!r}")
-        if response.status_code >= 400:
+        if join_response.status_code >= 400:
             return finish(
                 Outcome.ADMISSION_UNAVAILABLE,
-                error=f"join returned {response.status_code}: {response.text[:200]}",
+                error=(
+                    f"join returned {join_response.status_code}: "
+                    f"{join_response.text[:200]}"
+                ),
             )
         try:
-            joined = response.json()
+            joined = join_response.json()
             ticket_id = str(joined["ticket_id"])
             poll_interval_ms = max(
                 float(joined.get("poll_interval_ms", 2000)), MIN_POLL_INTERVAL_MS
@@ -208,7 +214,7 @@ async def run_client(
         except (ValueError, KeyError, TypeError) as exc:
             return finish(
                 Outcome.ADMISSION_UNAVAILABLE,
-                error=f"join body malformed: {exc!r} :: {response.text[:200]}",
+                error=f"join body malformed: {exc!r} :: {join_response.text[:200]}",
             )
 
         # --- 2. probe -----------------------------------------------------

@@ -339,11 +339,15 @@ falsification rule is written before the run rather than after.
 
 | Package | State |
 |---|---|
-| M1 — admission, controller, re-queue | built on branch `thisaru`; not yet merged |
-| M2 — estimator, delivery, client SDK | built on branch `sachintha`; not yet merged |
-| M3 — origin, testbed, analysis chain | built and tested on branch `devmith`; see [`M3-EVALUATION.md`](./M3-EVALUATION.md) |
+| M1 — admission, controller, re-queue | merged into `dev` |
+| M2 — estimator, delivery, client SDK | merged into `dev` |
+| M3 — origin, testbed, analysis chain | merged into `dev`; see [`M3-EVALUATION.md`](./M3-EVALUATION.md) |
 
-The three branches are being merged into a shared development branch.
+**All three branches are now merged into `dev`.** All three services are wired
+into `docker-compose.yml` and the whole suite runs against one installed package.
+No image has been built and no run has happened yet, so nothing here is a
+measurement. What the merge settled, and the three new cross-package issues it
+exposed, are recorded in [`INTEGRATION-ISSUES.md`](./INTEGRATION-ISSUES.md).
 
 Several early questions are now answered by the code. `true_class` travels on the
 `/queue/join` body; `mode: none` is an immediately-ADMITTED ticket that fetches the

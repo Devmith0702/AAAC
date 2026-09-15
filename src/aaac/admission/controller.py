@@ -1,14 +1,17 @@
 import asyncio
+import contextlib
+import logging
 import math
 import time
+
 import httpx
-import logging
+
+from aaac.admission.requeue import handle_timeout
+from aaac.admission.store import QueueStore
+from aaac.admission.window import weighted_mean_window, windows_for_all
 from aaac.common.classes import AccessClass
 from aaac.common.config import RunConfig
 from aaac.common.events import EventLogger
-from aaac.admission.store import QueueStore
-from aaac.admission.window import windows_for_all, weighted_mean_window
-from aaac.admission.requeue import handle_timeout
 
 log = logging.getLogger(__name__)
 
@@ -62,10 +65,8 @@ class AdmissionController:
         self.is_running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         await self.http_client.aclose()
 
     async def _loop(self) -> None:
@@ -109,7 +110,10 @@ class AdmissionController:
             p99 = float('inf')
             err_rate = 1.0
 
-        healthy = (p99 < adm_cfg.target_origin_p95_ms) and (err_rate < adm_cfg.target_origin_err_rate)
+        healthy = (
+            p99 < adm_cfg.target_origin_p95_ms
+            and err_rate < adm_cfg.target_origin_err_rate
+        )
 
         if healthy:
             self.alpha += adm_cfg.alpha_increase
@@ -151,7 +155,7 @@ class AdmissionController:
             windows_s = windows_for_all(adm_cfg, self.cfg.mode)
             admitted = await self.store.admit_n(n, now, windows_s)
 
-            for tid, exp in admitted:
+            for tid, _exp in admitted:
                 ticket = await self.store.get_ticket(tid)
                 if not ticket:
                     continue

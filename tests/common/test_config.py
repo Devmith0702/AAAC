@@ -1,5 +1,7 @@
 import pytest
+
 from aaac.common.config import _load_config_from_file
+
 
 def test_load_golden_yaml(tmp_path):
     # This expects configs/run.yaml to exist, but if run from a different dir it might fail.

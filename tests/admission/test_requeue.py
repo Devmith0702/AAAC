@@ -3,15 +3,22 @@
 Tests the retry downgrade logic, forced floor, and baseline divergence.
 Covers Invariant I4 and I5.
 """
-import pytest
-import asyncio
 from unittest.mock import AsyncMock
 
-from aaac.common.classes import AccessClass
-from aaac.common.config import AdmissionConfig, LoadConfig, RunConfig, EstimatorConfig, DeliveryConfig, OriginConfig
-from aaac.common.events import EventLogger
-from aaac.admission.store import InMemoryQueueStore
+import pytest
+
 from aaac.admission.requeue import handle_timeout
+from aaac.admission.store import InMemoryQueueStore
+from aaac.common.classes import AccessClass
+from aaac.common.config import (
+    AdmissionConfig,
+    DeliveryConfig,
+    EstimatorConfig,
+    LoadConfig,
+    OriginConfig,
+    RunConfig,
+)
+from aaac.common.events import EventLogger
 
 
 @pytest.fixture
@@ -34,10 +41,14 @@ def mock_cfg():
             max_attempts=3,  # Set low for easier testing of forced floor
             poll_interval_ms=2000,
         ),
-        estimator=EstimatorConfig(probe_bytes=1, min_rtt_samples=1, confidence_threshold=0.6, model_path=""),
+        estimator=EstimatorConfig(probe_bytes=1, min_rtt_samples=1,
+                                  confidence_threshold=0.6, model_path=""),
         delivery=DeliveryConfig(budgets_bytes={}),
         origin=OriginConfig(service_time_ms={}, concurrency_limit=64, queue_limit=256),
-        load=LoadConfig(n_clients=10, scale_factor=1, burst_center_s=1, burst_sigma_s=1, tail_decay_s=1, class_mix={"HIGH": 0.33, "MEDIUM": 0.33, "LOW": 0.34}, abandon_after_s=1)
+        load=LoadConfig(n_clients=10, scale_factor=1, burst_center_s=1, burst_sigma_s=1,
+                        tail_decay_s=1,
+                        class_mix={"HIGH": 0.33, "MEDIUM": 0.33, "LOW": 0.34},
+                        abandon_after_s=1)
     )
 
 @pytest.fixture
@@ -68,15 +79,18 @@ async def test_requeue_aaac_downgrade(store, logger, mock_cfg):
     
     # Verify events
     logger.log.assert_any_call(
-        "TIMEOUT", ticket_id="t1", access_class=int(AccessClass.HIGH), true_class=int(AccessClass.HIGH), attempt=1
+        "TIMEOUT", ticket_id="t1", access_class=int(AccessClass.HIGH),
+        true_class=int(AccessClass.HIGH), attempt=1
     )
 
 
     logger.log.assert_any_call(
-        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=1, forced_floor=False
+        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.MEDIUM),
+        true_class=int(AccessClass.HIGH), attempt=1, forced_floor=False
     )
     logger.log.assert_any_call(
-        "REQUEUE", ticket_id="t1", access_class=int(AccessClass.MEDIUM), true_class=int(AccessClass.HIGH), attempt=2, position=0
+        "REQUEUE", ticket_id="t1", access_class=int(AccessClass.MEDIUM),
+        true_class=int(AccessClass.HIGH), attempt=2, position=0
     )
 
 @pytest.mark.asyncio
@@ -85,7 +99,8 @@ async def test_invariant_i4_forced_floor(store, logger, mock_cfg):
     
     When attempts >= max_attempts, it is forced to LOW and logs DOWNGRADE with forced_floor=True.
     """
-    await store.create_ticket("t1", 100, AccessClass.HIGH, AccessClass.HIGH, mock_cfg.admission.max_attempts, None)
+    await store.create_ticket("t1", 100, AccessClass.HIGH, AccessClass.HIGH,
+                              mock_cfg.admission.max_attempts, None)
     
     await handle_timeout("t1", store, logger, mock_cfg)
     
@@ -95,7 +110,9 @@ async def test_invariant_i4_forced_floor(store, logger, mock_cfg):
     
     # Verify FORCED_FLOOR was emitted as a DOWNGRADE with forced_floor=True
     logger.log.assert_any_call(
-        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.LOW), true_class=int(AccessClass.HIGH), attempt=mock_cfg.admission.max_attempts, forced_floor=True
+        "DOWNGRADE", ticket_id="t1", access_class=int(AccessClass.LOW),
+        true_class=int(AccessClass.HIGH),
+        attempt=mock_cfg.admission.max_attempts, forced_floor=True
     )
 
 @pytest.mark.asyncio
@@ -122,7 +139,9 @@ async def test_invariant_i5_cleaner(store, logger, mock_cfg):
     await store.create_ticket("t2", seq2, AccessClass.LOW, AccessClass.LOW, 1, None)
     
     # 3. Admit t1 so it moves from waiting to inflight
-    await store.admit_n(1, now=100.0, windows_s={AccessClass.HIGH: 20.0, AccessClass.MEDIUM: 20.0, AccessClass.LOW: 20.0})
+    await store.admit_n(1, now=100.0, windows_s={AccessClass.HIGH: 20.0,
+                                                 AccessClass.MEDIUM: 20.0,
+                                                 AccessClass.LOW: 20.0})
     
     # 4. t1 times out and is requeued in baseline mode
     await handle_timeout("t1", store, logger, mock_cfg)

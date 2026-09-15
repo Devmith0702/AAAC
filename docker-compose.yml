@@ -44,15 +44,47 @@ services:
       retries: 10
 
   # --- M1: admission service -----------------------------------------------
-  # Built from the root Dockerfile, which is still a placeholder.
+  # The single writer of the event log (§3.8), so results/ is mounted rw.
+  #
+  # Note AAAC_CONFIG_PATH, not AAAC_CONFIG: M1's loader and M3's read different
+  # variable names for the same file. Recorded as A7 in INTEGRATION-ISSUES.md;
+  # both are set here so neither service depends on the other's spelling.
   admission:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/admission.Dockerfile
     depends_on:
       - redis
-    environment:
-      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET}
+      - origin
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./results:/app/results
+    environment:
+      AAAC_CONFIG_PATH: /app/configs/run.yaml
+      AAAC_CONFIG: /app/configs/run.yaml
+      AAAC_RESULTS_DIR: /app/results
+      AAAC_RUN_ID: ${AAAC_RUN_ID:-dev}
+      AAAC_REDIS_URL: redis://redis:6379/0
+      AAAC_ORIGIN_URL: http://origin:8002
+      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET (see .env.example)}
+
+  # --- M2: estimator / delivery service -------------------------------------
+  delivery:
+    build:
+      context: .
+      dockerfile: docker/delivery.Dockerfile
+    depends_on:
+      - origin
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./configs:/app/configs:ro
+    environment:
+      AAAC_CONFIG_PATH: /app/configs/run.yaml
+      AAAC_ORIGIN_BASE: http://origin:8002
+      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET (see .env.example)}
 
   # --- M3: mock origin -----------------------------------------------------
   origin:
@@ -69,9 +101,17 @@ services:
       AAAC_RESULTS_DIR: /app/results
       AAAC_ORIGIN_HOST: 0.0.0.0
       AAAC_ORIGIN_PORT: "8002"
+      # Both services must agree on the run id or their two logs cannot be
+      # paired on timestamp. Give every run its own: `make up RUN_ID=s1-aaac`.
+      # Leaving it pinned across runs appends them to one file, and the analysis
+      # then refuses the log for holding more than one run.
       AAAC_RUN_ID: ${AAAC_RUN_ID:-dev}
-      AAAC_MODE: ${AAAC_MODE:-none}
-      AAAC_SEED: ${AAAC_SEED:-1}
+      # AAAC_MODE and AAAC_SEED are deliberately NOT set here. M1's loader takes
+      # mode and seed from configs/run.yaml and honours no environment override
+      # (INTEGRATION-ISSUES.md A8, A10), so passing them to the origin lets the
+      # two services run different experiments: the origin stamped
+      # ORIGIN_SAMPLE with `none` while the admission service logged `aaac`, and
+      # EventLog.single_mode() refused the result. run.yaml governs both.
 
   # --- M3: throughput reflector for `make verify-testbed` ------------------
   # Unshaped on purpose: it is the reference point the shaped clients measure
@@ -122,13 +162,3 @@ services:
       AAAC_NETEM_LOSS: 3%
       AAAC_NETEM_BURST: 32kbit
     command: ["sh", "-c", "netem.sh && sleep infinity"]
-# --- Not mine. Uncomment when M2 ships; ports are fixed by §3.5. -------------
-#
-#  delivery:           # M2 - http://delivery:8001
-#    build:
-#      context: .
-#      dockerfile: docker/delivery.Dockerfile
-#    depends_on: [origin]
-#    environment:
-#      AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET}
-#    ports: ["127.0.0.1:8001:8001"]

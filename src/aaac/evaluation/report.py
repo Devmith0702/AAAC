@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 from aaac.evaluation.experiment import ExperimentResult
 from aaac.evaluation.falsification import Verdict
 from aaac.evaluation.metrics import ClassMetrics, RunMetrics

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aaac.evaluation.access_class import AccessClass
+from aaac.common.classes import AccessClass
 
 
 @dataclass(frozen=True)

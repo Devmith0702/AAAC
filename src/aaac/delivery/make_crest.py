@@ -156,7 +156,7 @@ def build() -> Image.Image:
     _star(d, n)
     _book(d, n)
 
-    return img.resize((SIZE, SIZE), Image.LANCZOS)
+    return img.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
 
 
 def main() -> None:
