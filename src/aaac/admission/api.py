@@ -36,7 +36,7 @@ from aaac.common.classes import AccessClass
 from aaac.common.config import get_config
 from aaac.common.events import EventLogger
 from aaac.common.schemas import LinkEstimate, TicketStatus
-from aaac.common.tokens import issue_token
+from aaac.common.tokens import TokenError, issue_token, verify_token
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,8 @@ class CompleteRequest(BaseModel):
     bytes: int
     duration_ms: float
     variant: str
+    reason: Literal["timeout", "origin_unavailable"] | None = None
+    admit_token: str | None = None
 
 # ---------------------------------------------------------------------------
 # Module-level state (populated in lifespan, replaced in tests)
@@ -324,24 +326,37 @@ async def queue_complete(req: CompleteRequest):
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    state = "COMPLETED" if req.ok else "ABANDONED"
-    await store.complete(req.ticket_id, state)
+    # 1. Verify the admit token (ignoring expiration)
+    if req.admit_token:
+        try:
+            payload = verify_token(req.admit_token, ignore_exp=True)
+            if payload["tid"] != req.ticket_id or payload["att"] != ticket.attempt:
+                raise HTTPException(status_code=403, detail="Invalid token for this attempt")
+        except TokenError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+    elif req.ok:
+        # Enforce token on successes at a minimum
+        raise HTTPException(status_code=403, detail="admit_token required")
 
     if req.ok:
+        await store.complete(req.ticket_id, "COMPLETED")
         controller.record_completion()
 
-    await logger.log(
-        "COMPLETE" if req.ok else "ABANDON",
-        ticket_id=req.ticket_id,
-        access_class=int(ticket.access_class),
-        true_class=int(ticket.true_class),
-        attempt=ticket.attempt,
-        bytes=req.bytes,
-        duration_ms=req.duration_ms,
-        variant=req.variant,
-    )
-
-    return {"state": state}
+        await logger.log(
+            "COMPLETE",
+            ticket_id=req.ticket_id,
+            access_class=int(ticket.access_class),
+            true_class=int(ticket.true_class),
+            attempt=ticket.attempt,
+            bytes=req.bytes,
+            duration_ms=req.duration_ms,
+            variant=req.variant,
+        )
+        return {"state": "COMPLETED"}
+    else:
+        from aaac.admission.requeue import handle_timeout
+        await handle_timeout(ticket.ticket_id, store, logger, cfg, reason=req.reason)
+        return {"state": "WAITING"}
 
 # ---------------------------------------------------------------------------
 # GET /admin/snapshot

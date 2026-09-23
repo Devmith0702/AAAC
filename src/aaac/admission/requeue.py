@@ -6,7 +6,7 @@ from aaac.common.config import RunConfig
 from aaac.common.events import EventLogger
 
 
-async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: RunConfig) -> None:
+async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: RunConfig, reason: str | None = None) -> None:
     """C4: Non-Regressive Re-Queue Policy.
     
     Called by the AdmissionController when a ticket's window expires while inflight.
@@ -29,12 +29,17 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
     # — a zero that reads as real data is worse than a missing field.
     # If M2's SDK reports bytes on the timeout path in a future protocol revision,
     # this is where to add them.
+    kwargs = {}
+    if reason:
+        kwargs["reason"] = reason
+
     await logger.log(
         "TIMEOUT",
         ticket_id=tid,
         access_class=int(ticket.access_class),
         true_class=int(ticket.true_class),
         attempt=ticket.attempt,
+        **kwargs
     )
     
     new_attempt = ticket.attempt + 1

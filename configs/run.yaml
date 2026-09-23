@@ -13,11 +13,11 @@
 # directory comes from AAAC_RESULTS_DIR, which M1 reads too.
 
 seed: 1
-run_id: dev
+run_id: s1-none
 # none | baseline | aaac (CLAUDE.md §3.4). The admission service reads the mode
 # from this file only — it honours no environment override — so this value, not
 # `make run MODE=...`, is what M1's service runs as. See INTEGRATION-ISSUES.md A8.
-mode: aaac
+mode: none
 
 admission:
   w_base_s: 20.0

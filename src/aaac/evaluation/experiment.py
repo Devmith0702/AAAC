@@ -118,17 +118,50 @@ class ComposeRunner:
         )
 
     def run(self, seed: int, mode: str, population: Population, results_dir: Path) -> Path:
-        raise ExperimentError(
-            "ComposeRunner cannot run yet. A real run needs:\n"
-            "  - M1's admission service at http://admission:8000 (the single writer of\n"
-            "    the event log, §3.8) — on M1's branch, not yet merged or in compose\n"
-            "  - M2's SDK (`aaac.client.sdk.run_client`), which the load generator\n"
-            "    drives (§4.3 forbids me writing my own HTTP logic) — on M2's branch,\n"
-            "    not yet merged\n"
-            "  - M2's delivery service at http://delivery:8001, wired into compose\n"
-            "Until then, use --synthetic to exercise the analysis chain, and read its\n"
-            "output as fabricated data rather than a measurement."
+        run_id = run_id_for(seed, mode)
+        
+        # 1. Update configs/run.yaml using string replacement to preserve M3's comments
+        config_path = self.compose_file.parent / "configs" / "run.yaml"
+        config_text = config_path.read_text()
+        import re
+        config_text = re.sub(r"^seed:.*", f"seed: {seed}", config_text, flags=re.MULTILINE)
+        config_text = re.sub(r"^run_id:.*", f"run_id: {run_id}", config_text, flags=re.MULTILINE)
+        config_text = re.sub(r"^mode:.*", f"mode: {mode}", config_text, flags=re.MULTILINE)
+        config_path.write_text(config_text)
+        
+        # 2. Restart admission and delivery so they load the new config
+        subprocess.run(
+            ["docker", "compose", "restart", "admission", "delivery"],
+            check=True, capture_output=True, text=True,
         )
+        
+        # Give the services a moment to come back up
+        import time
+        time.sleep(2.0)
+        
+        # 3. Drive the load generator against the compose stack
+        pop_file = population_path(results_dir, seed)
+        procs = []
+        for cls_name in ["HIGH", "MEDIUM", "LOW"]:
+            p = subprocess.Popen(
+                ["docker", "compose", "exec", "-T", f"client-{cls_name.lower()}", "python", "-m", "aaac.evaluation.loadgen", "--population", str(pop_file), "--class", cls_name]
+            )
+            procs.append(p)
+            
+        # Wait for all load generators to finish
+        try:
+            for p in procs:
+                p.wait()
+                if p.returncode != 0:
+                    raise ExperimentError("Load generator failed in one or more containers")
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        
+        # 4. Return the path to the event log written by the admission service
+        return results_dir / f"{self.prefix}events-{run_id}.jsonl"
 
 
 # --------------------------------------------------------------------------

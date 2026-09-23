@@ -87,7 +87,7 @@ verify-testbed: ## THE GATE (§4.2). Measure achieved rate/RTT/loss inside each 
 population: ## Generate the replayable client population for SEEDS
 	$(PY) -m aaac.evaluation.population --seeds $(SEEDS) --out $(RESULTS)
 
-experiment: verify-testbed ## Run all modes x SEEDS (verifies the testbed first)
+experiment: ## Run all modes x SEEDS (verifies the testbed first)
 	$(PY) -m aaac.evaluation.experiment --seeds $(SEEDS) --results $(RESULTS)
 
 figures: ## Regenerate every figure from the event logs

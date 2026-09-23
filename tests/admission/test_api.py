@@ -93,15 +93,19 @@ async def test_status_endpoint():
 
 @pytest.mark.asyncio
 async def test_complete_endpoint():
+    from aaac.common.tokens import issue_token
     with TestClient(app) as client:
         join_res = client.post("/queue/join", json={"client_id": "c1", "true_class": 0})
         tid = join_res.json()["ticket_id"]
+        
+        admit_token = issue_token(tid, AccessClass.HIGH, 1, 100)
         comp_res = client.post("/queue/complete", json={
             "ticket_id": tid,
             "ok": True,
             "bytes": 1024,
             "duration_ms": 500,
             "variant": "full",
+            "admit_token": admit_token,
         })
     assert comp_res.status_code == 200
     assert comp_res.json() == {"state": "COMPLETED"}

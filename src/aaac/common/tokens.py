@@ -52,7 +52,7 @@ def issue_token(tid: str, cls: AccessClass, attempt: int, ttl_s: float) -> str:
     
     return f"{b64_payload}.{b64_sig}"
 
-def verify_token(raw: str) -> dict[str, Any]:
+def verify_token(raw: str, ignore_exp: bool = False) -> dict[str, Any]:
     """Verify and parse an admit token. Raises TokenError."""
     try:
         b64_payload, b64_sig = raw.split(".")
@@ -76,7 +76,7 @@ def verify_token(raw: str) -> dict[str, Any]:
     except Exception as exc:
         raise TokenError("Invalid payload encoding") from exc
         
-    if payload.get("exp", 0) < time.time():
+    if not ignore_exp and payload.get("exp", 0) < time.time():
         raise TokenError("Token expired")
         
     return payload
