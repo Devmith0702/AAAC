@@ -27,7 +27,7 @@ x-client-common: &client-common
     AAAC_NETEM_IFACE: eth0
     # Downstream is the direction that carries the ~450 KB page, so it is the
     # one that must be shaped. See the header of netem.sh.
-    AAAC_NETEM_DIRECTION: ingress
+    AAAC_NETEM_DIRECTION: ${AAAC_NETEM_DIRECTION:-ingress}
 
 services:
   # --- M1's queue state. Declared here so the environment is complete; M1 owns
