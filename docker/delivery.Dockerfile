@@ -14,7 +14,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 COPY README.md ./
-RUN pip install --no-cache-dir .
+# See the note in origin.Dockerfile: retry rather than fail a long download.
+RUN pip install --no-cache-dir --retries 5 --timeout 60 .
 
 # models/ carries the exported classifier the estimator loads at request time.
 COPY models ./models

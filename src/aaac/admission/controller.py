@@ -15,6 +15,46 @@ from aaac.common.events import EventLogger
 
 log = logging.getLogger(__name__)
 
+#: Horizon, in seconds, over which mu_hat averages the completion rate.
+#:
+#: MEASURED DEFECT: the estimator was `0.3*rate + 0.7*mu_hat` on a 1 s tick — a
+#: ~3 s memory. Service times here run to ~300 s for a LOW client fetching a
+#: 411 KB page over 512 kbit/s, so almost every tick observes zero completions
+#: and mu_hat decays to zero between them. C_max = ceil(mu_hat * W_mean) then
+#: collapses to 0, capacity_limit = max(0, 0 - in_flight) = 0, and the queue
+#: admits nobody — which cannot recover, because admitting nobody produces no
+#: completions to raise mu_hat again. Observed: C_max <= 1 on 82% of control
+#: ticks under baseline and 90% under aaac, with mu_hat median 0.000.
+#:
+#: The horizon must exceed the service time being estimated. 60 s covers the
+#: LOW-class transfer with margin at this scale.
+MU_HAT_HORIZON_S = 60.0
+
+#: Liveness floor on the concurrency cap, expressed as a fraction of what the
+#: origin can serve concurrently: floor = origin.concurrency_limit // this.
+#:
+#: A cap of zero is not a control decision, it is a deadlock — so a floor is
+#: needed. Tying it to `origin.concurrency_limit` ties it to the thing C_max
+#: exists to protect, and makes it scale with the configured origin instead of
+#: being a magic number.
+#:
+#: A FLOOR OF 1 WAS TRIED AND IS WRONG. The reasoning was that one client at a
+#: time gets the whole link, which is true of the transfer and false of the
+#: queue: 49 LOW clients then have to be served sequentially through a single
+#: slot while all of them burn the same abandon timer. Measured under `aaac`:
+#: C_max pinned at 1 for all 637 ticks, 15 admits for 49 clients in 10 minutes,
+#: 47 abandoned without ever being admitted, 1/49 completions.
+#:
+#: The binding constraint is the shaped link, not the origin. At the gate's
+#: measured 16 KB/s TCP goodput for LOW, even all 49 clients sharing the link
+#: fetch `essential` (1,909 B) in ~5.7 s against a 50 s window — while the same
+#: 49 sharing it for `full` (411 KB) need ~1,231 s against a 20 s window and all
+#: miss. Payload adaptation is what separates those two outcomes, so the cap
+#: must not be the thing that prevents clients from reaching it. The origin
+#: meanwhile was measured at max 3 in-flight with 0 rejections, so a quarter of
+#: its limit is conservative.
+MIN_C_MAX_ORIGIN_FRACTION = 4
+
 class AdmissionController:
     """C5: Capacity-Tracking Admission Rate Controller."""
 
@@ -35,11 +75,11 @@ class AdmissionController:
         self.completions_this_tick = 0
         self.alpha = float(cfg.admission.alpha_min)
         self.mu_hat = 0.0
-        # True once record_completion() is called at least once. Used to gate the
-        # cold-start C_max bypass: we hold capacity unconstrained until the EWMA
-        # has at least one real data point. mu_hat > 0 was wrong here — the EWMA
-        # decays geometrically and is never exactly 0 after any completion, so the
-        # bypass never re-engaged and C_max pinned at ceil(epsilon * w_mean) = 1.
+        # True once record_completion() has been called at least once. Retained
+        # for observability only: it used to gate a cold-start bypass that held
+        # C_max unconstrained until the first completion, which deadlocked when
+        # nothing ever completed (see the note beside the c_max computation).
+        # Nothing reads it now.
         self._ever_completed: bool = False
 
         self.is_running = False
@@ -90,11 +130,16 @@ class AdmissionController:
         now = time.time()
         adm_cfg = self.cfg.admission
 
-        # 1. Capacity estimate — mu_hat via EWMA (alpha=0.3)
+        # 1. Capacity estimate — mu_hat via EWMA over MU_HAT_HORIZON_S.
+        #
+        # The coefficient is derived from the tick and the horizon rather than
+        # hard-coded, so a change to control_tick_s cannot silently shorten the
+        # memory. See MU_HAT_HORIZON_S for the defect this replaced.
         comps = self.completions_this_tick
         self.completions_this_tick = 0
         rate = comps / adm_cfg.control_tick_s
-        self.mu_hat = (0.3 * rate) + (0.7 * self.mu_hat)
+        ewma_alpha = min(1.0, adm_cfg.control_tick_s / MU_HAT_HORIZON_S)
+        self.mu_hat = (ewma_alpha * rate) + ((1.0 - ewma_alpha) * self.mu_hat)
 
         # 2. Rate control (AIMD on origin health)
         try:
@@ -142,7 +187,25 @@ class AdmissionController:
         # least one real completion. Do NOT gate on `mu_hat > 0` — the EWMA decays
         # geometrically but never reaches exactly 0 after any completion, so that
         # check never re-engages and C_max pins at ceil(epsilon * w_mean) = 1.
-        c_max = c_max_base if self._ever_completed else float('inf')
+        # The floor keeps the queue alive: ceil(mu_hat * W_mean) reaches 0
+        # whenever the completion estimate does, and a cap of 0 admits nobody
+        # for the rest of the run. See MIN_C_MAX_ORIGIN_FRACTION.
+        #
+        # The cold-start bypass that used to sit here — unlimited capacity until
+        # the first completion — was removed. It deadlocked in the opposite
+        # direction: if nothing completes, `_ever_completed` never flips, so the
+        # cap stays infinite, every waiting client is admitted at once, they
+        # contend for one shared link, and none of them finishes inside its
+        # window. Measured on the shaped testbed: 49 LOW clients, 1,829 admits
+        # and 1,820 timeouts (~37 retry cycles each), zero completions, mu_hat
+        # pinned at 0.000 for all 660 ticks. The bypass existed because the old
+        # 3-second EWMA made mu_hat decay to nothing between completions; with
+        # MU_HAT_HORIZON_S that estimate now recovers on its own, so the cap can
+        # simply be honoured from the first tick.
+        min_c_max = max(
+            1, self.cfg.origin.concurrency_limit // MIN_C_MAX_ORIGIN_FRACTION
+        )
+        c_max = max(c_max_base, min_c_max)
 
         # 4. Admit tickets
         alpha_limit = int(self.alpha * adm_cfg.control_tick_s)

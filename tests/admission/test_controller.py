@@ -1,9 +1,11 @@
-import math
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from aaac.admission.controller import AdmissionController
+from aaac.admission.controller import (
+    MU_HAT_HORIZON_S,
+    AdmissionController,
+)
 from aaac.admission.store import InMemoryQueueStore
 from aaac.admission.window import weighted_mean_window
 from aaac.common.classes import AccessClass
@@ -116,7 +118,12 @@ async def test_aimd_clamps_to_min_max(controller, store):
 
 @pytest.mark.asyncio
 async def test_mu_hat_ewma_calculation(controller, store):
-    """Capacity estimate mu_hat should track completions using EWMA (alpha=0.3)."""
+    """mu_hat tracks completions via an EWMA whose memory is MU_HAT_HORIZON_S.
+
+    The coefficient is derived from control_tick_s / MU_HAT_HORIZON_S, not
+    hard-coded. The previous fixed 0.3 gave a ~3 s memory and was the cause of
+    the C_max collapse documented in INTEGRATION-ISSUES.md A12.
+    """
     # Tick 1: 10 completions
     controller.record_completion() # Need 10
     controller.completions_this_tick = 10
@@ -128,17 +135,52 @@ async def test_mu_hat_ewma_calculation(controller, store):
     
     await controller._tick()
     
-    rate = 10 / controller.cfg.admission.control_tick_s
-    expected_mu_hat = (0.3 * rate) + (0.7 * 0.0)
+    tick_s = controller.cfg.admission.control_tick_s
+    alpha = min(1.0, tick_s / MU_HAT_HORIZON_S)
+
+    rate = 10 / tick_s
+    expected_mu_hat = alpha * rate
     assert controller.mu_hat == pytest.approx(expected_mu_hat)
-    
+
     # Tick 2: 5 completions
     controller.completions_this_tick = 5
     await controller._tick()
-    
-    rate2 = 5 / controller.cfg.admission.control_tick_s
-    expected_mu_hat2 = (0.3 * rate2) + (0.7 * expected_mu_hat)
+
+    rate2 = 5 / tick_s
+    expected_mu_hat2 = (alpha * rate2) + ((1.0 - alpha) * expected_mu_hat)
     assert controller.mu_hat == pytest.approx(expected_mu_hat2)
+
+
+@pytest.mark.asyncio
+async def test_mu_hat_survives_a_gap_between_completions(controller, store):
+    """The property that matters, not just the arithmetic.
+
+    The estimator used a 0.3/0.7 EWMA on a 1 s tick — a ~3 s memory. A LOW
+    client needs ~300 s to fetch 411 KB over 512 kbit/s, so nearly every tick
+    sees zero completions, mu_hat decayed to zero, C_max = ceil(0 * W) = 0, and
+    the queue admitted nobody ever again. Measured before the fix: C_max <= 1 on
+    82% of ticks under baseline and 90% under aaac.
+    """
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"p99_ms": 100.0, "err_rate_1s": 0.0}
+    controller.http_client.get = AsyncMock(return_value=mock_resp)
+
+    controller.record_completion()
+    controller.completions_this_tick = 10
+    await controller._tick()
+    after_completion = controller.mu_hat
+    assert after_completion > 0
+
+    # 30 idle ticks — longer than a HIGH transfer, shorter than a LOW one.
+    for _ in range(30):
+        controller.completions_this_tick = 0
+        await controller._tick()
+
+    assert controller.mu_hat > 0.25 * after_completion, (
+        "mu_hat collapsed across an idle gap shorter than one LOW transfer; "
+        "C_max would reach 0 and the queue would deadlock"
+    )
 
 @pytest.mark.asyncio
 async def test_invariant_i3_in_flight_le_c_max(controller, store, mock_cfg):
@@ -171,12 +213,27 @@ async def test_invariant_i3_in_flight_le_c_max(controller, store, mock_cfg):
             AccessClass.LOW: int(total_waiting * mix.get("LOW", 0.34))
         }
         w_mean = weighted_mean_window(waiting_counts, mock_cfg.admission, mock_cfg.mode)
-        c_max = math.ceil(controller.mu_hat * w_mean) if controller.mu_hat > 0 else float('inf')
-        
+        assert w_mean > 0
+
+        # Read C_max from the controller's OWN CONTROL event rather than
+        # recomputing it here. The old version mirrored the implementation's
+        # arithmetic — including a `mu_hat > 0` gate the controller itself
+        # documents as a bug — so it tested only that the formula could be
+        # copied twice, and it silently compared against a number the
+        # controller never used.
+        control_calls = [
+            call for call in controller.logger.log.await_args_list
+            if call.args and call.args[0] == "CONTROL"
+        ]
+        assert control_calls, "the controller must emit a CONTROL event every tick"
+        c_max = control_calls[-1].kwargs["C_max"]
+
         in_flight = await store.inflight_count()
-        
-        # INVARIANT I3 assertion
-        if c_max != float('inf'):
+
+        # INVARIANT I3. Cold start is exempt by design: until the first real
+        # completion the cap is deliberately unconstrained, which the controller
+        # reports as -1 (its sentinel for "no cap this tick").
+        if c_max not in (float("inf"), -1):
             assert in_flight <= c_max, (
                 f"Tick {tick}: in_flight ({in_flight}) exceeded C_max ({c_max})"
             )

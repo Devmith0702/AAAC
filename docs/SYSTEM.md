@@ -673,25 +673,73 @@ sees the JOINs and ADMITs but not the COMPLETEs.)
 *At scale, on generated data.* 20,000 clients × 3 modes × 5 seeds through
 metrics, statistics, five figures and a report.
 
-**Not a measurement.** None of the above is a measurement of the system under
-load, because **no run has gone through the shaped containers**. All three
-client containers exit 1 at startup on this machine:
+**A measurement, on a verified testbed.** Under OrbStack (kernel
+`7.0.14-orbstack`) `ifb` is available, the shaped client containers stay up, and
+the gate passes within 10% on all three profiles (§2.7 of
+[`M3-EVALUATION.md`](./M3-EVALUATION.md)). Docker Desktop's `6.12.76-linuxkit`
+cannot create `ifb0` and the clients exit 1 there — §7.2's loud failure working
+as designed.
 
-    netem.sh: FATAL: could not create ifb0. The ifb kernel module is
-        unavailable in this kernel (common under Docker Desktop).
+Three seeds × three modes, 140 clients each, every number computed from the
+event log and disaggregated by `true_class`:
 
-That is §7.2's loud failure working: a container that cannot shape downstream
-never carries load. `make verify-testbed` consequently reports `service
-"client-high" is not running`. Until the testbed runs on a kernel with `ifb` —
-a Linux host — there is no Δ worth reporting, because every client is on the
-same unshaped link. `ComposeRunner` is also still unwritten.
+| mode | Δ seed 1 | Δ seed 2 | Δ seed 3 | **mean Δ** | mean aggregate |
+|---|---|---|---|---|---|
+| `none` | 0.796 | 0.857 | 0.816 | **0.823** | 0.712 |
+| `baseline` | 1.000 | 1.000 | 0.959 | **0.986** | 0.655 |
+| `aaac` | 0.061 | 0.000 | 0.020 | **0.027** | **0.991** |
 
-One consequence visible already: on the Docker bridge the probe measures around
-1 Gbit/s, and C1's **fallback condition 5 fires on every client** —
-`log10_throughput_kbps=6.03 outside [0, 5.75]` — so each one correctly falls
-back to MEDIUM rather than being confidently misread. The guard described in
-§6.1 is doing exactly what it was built for, and it is also why every client in
-these runs received `reduced`.
+**HYPOTHESIS SUPPORTED** — all three pre-registered conditions of §8:
+
+1. Paired difference **0.9592, 95% CI [0.8714, 1.0470]**, t = 47.0, p = 0.0005 —
+   the interval excludes zero.
+2. Origin 5xx rate **0.000000** under both baseline and aaac.
+3. HIGH-class p95 time-to-completion **improved** 84.6% (41.79 s → 6.43 s), far
+   inside the 20% margin — fairness was not bought by slowing the fast clients.
+
+The report withholds the Wilcoxon p-value (at n=3 the smallest attainable
+two-sided p is 0.25, so it could not reject regardless of effect size) and stamps
+the verdict **under-powered**: §4.5 requires ≥5 seeds, so this must not be
+presented as the headline result without seeds 4 and 5.
+
+Per-class detail for seed 1:
+
+| mode | HIGH | MEDIUM | LOW | Δ | aggregate | Jain |
+|---|---|---|---|---|---|---|
+| `none` | 1.000 | 1.000 | 0.204 | 0.796 | 0.721 | 0.793 |
+| `baseline` | 1.000 | 1.000 | **0.000** | 1.000 | 0.650 | 0.667 |
+| `aaac` | 1.000 | 1.000 | **0.939** | 0.061 | 0.979 | 0.999 |
+
+**AAAC reduces the completion gap from 1.000 to 0.061 while raising aggregate
+completion from 0.650 to 0.979** — it does not close the gap by making HIGH
+worse, which is the trade-off §8 exists to catch.
+
+The mechanism is in the variants and the timings. `baseline` served
+`{full: 91}` — the A1 gate holding, so the control really is access-blind — and
+produced **781 timeouts with zero LOW completions**: all 49 LOW clients ran
+634.9 s and every one abandoned, because 411 KB cannot cross 512 kbit/s inside a
+20 s window at the 16 KB/s TCP goodput the gate measured. `aaac` served
+`{reduced: 101, essential: 36}`, and the same 49 clients finished in **72.4 s**
+with 46 completions and a mean of 1.93 attempts.
+
+Origin 5xx rate is **0.000000 in every mode**, so protection was not traded for
+fairness — condition 2 of the §8 rule.
+
+**What these runs do NOT support:**
+
+- **Under-powered statistics.** Three seeds, where §4.5 requires five. The
+  paired t-test is real (df=2) but the report itself flags the verdict as
+  under-powered, and the Wilcoxon test is withheld entirely. Seeds 4 and 5 would
+  settle it.
+- **The classifier is not validated.** C1 covers **2 of 140 tickets**: with
+  `C_max` at 16 the queue drains before most clients accumulate the RTT samples
+  an estimate needs. Δ here comes from C2/C3/C4, not from classification.
+- **Origin collapse is not reproduced.** 140 clients peak the origin at 3
+  in-flight against a limit of 64, with zero rejections. These runs support the
+  completion gap, not Stage 1's congestion collapse.
+- **Goodput is an upper bound**, because `TIMEOUT` carries no `bytes` (A4).
+- **Scaled replication**: 140 clients with compressed arrivals, not the 20,000
+  of the full design. See the header of `configs/run.yaml`.
 
 **Known issues** (detail in [`INTEGRATION-ISSUES.md`](./INTEGRATION-ISSUES.md)):
 

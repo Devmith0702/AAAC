@@ -46,6 +46,19 @@ class QueueStore(Protocol):
     async def expire_inflight(self, now: float) -> list[str]: ...
     async def complete(self, tid: str, state: str) -> None: ...
     async def get_counters(self) -> dict[str, dict[str, int]]: ...
+    """Live counters for /admin/snapshot, keyed by **true_class**.
+
+    They were keyed by `access_class`, which C4 mutates on every downgrade, so a
+    HIGH ticket that degraded to MEDIUM and completed incremented MEDIUM's
+    counter. Observed on the live dashboard mid-run: `HIGH completed 101,
+    MEDIUM 0, LOW 0`, while the event log for the same instant showed HIGH
+    35/35, MEDIUM 56/56, LOW 10/49 by true_class — 101 was every completion in
+    the run, attributed to one class.
+
+    Nothing in the control path reads these (the controller uses waiting_count
+    and inflight_count), so this affects only what an operator sees — which is
+    exactly why it had to be right (A15).
+    """
 
 ADMIT_N_LUA = """
 local run = KEYS[1]
@@ -71,10 +84,16 @@ for i = 1, #tickets, 2 do
         local class_val = tonumber(class_str)
         local win = windows[class_val] or w_medium
         local expires_at = now + win
-        
+
+        -- Counters are keyed by true_class, not the (mutable) access class.
+        -- The window still comes from access_class: that is the control
+        -- decision. See get_counters for why the two must not be conflated.
+        local true_class_str = redis.call('HGET', ticket_key, 'true_class')
+        local true_val = tonumber(true_class_str) or class_val
+
         redis.call('HMSET', ticket_key, 'state', 'ADMITTED', 'expires_at', tostring(expires_at))
         redis.call('ZADD', inflight_key, expires_at, tid)
-        redis.call('HINCRBY', 'aaac:' .. run .. ':counters', 'waiting:' .. class_val, -1)
+        redis.call('HINCRBY', 'aaac:' .. run .. ':counters', 'waiting:' .. true_val, -1)
         
         table.insert(admitted, tid)
         table.insert(admitted, tostring(expires_at))
@@ -109,7 +128,7 @@ class RedisQueueStore:
         pipe = self.r.pipeline()
         pipe.hset(key, mapping=mapping)
         pipe.zadd(f"aaac:{self.run_id}:waiting", {tid: seq})
-        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{int(access_class)}", 1)
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{int(true_class)}", 1)
         await pipe.execute()
         
     async def get_ticket(self, tid: str) -> TicketData | None:
@@ -151,9 +170,9 @@ class RedisQueueStore:
         key = f"aaac:{self.run_id}:ticket:{tid}"
         pipe = self.r.pipeline()
         
-        # Get old class for timeout counter
-        old_class_bytes = await self.r.hget(key, "class")
-        old_class = int(old_class_bytes) if old_class_bytes else 0
+        # Counters are keyed by true_class (see get_counters).
+        true_class_bytes = await self.r.hget(key, "true_class")
+        true_val = int(true_class_bytes) if true_class_bytes else 0
         
         if new_class is not None:
             pipe.hset(key, "class", str(int(new_class)))
@@ -164,12 +183,10 @@ class RedisQueueStore:
         pipe.zrem(f"aaac:{self.run_id}:inflight", tid)
         pipe.zadd(f"aaac:{self.run_id}:waiting", {tid: score})
         
-        # Reinsert implies timeout in this system
-        pipe.hincrby(f"aaac:{self.run_id}:counters", f"timed_out:{old_class}", 1)
-        
-        # Increment waiting for the new class
-        target_class = int(new_class) if new_class is not None else old_class
-        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{target_class}", 1)
+        # Reinsert implies timeout in this system. Both counters use true_class,
+        # so a downgraded ticket stays attributed to the link it actually has.
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"timed_out:{true_val}", 1)
+        pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{true_val}", 1)
         
         await pipe.execute()
         
@@ -183,8 +200,9 @@ class RedisQueueStore:
             new_cls = int(new_class)
             if old_class != new_cls:
                 pipe.hset(key, "class", str(new_cls))
-                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{old_class}", -1)
-                pipe.hincrby(f"aaac:{self.run_id}:counters", f"waiting:{new_cls}", 1)
+                # No counter movement: counters are keyed by true_class, which
+                # this call does not change. Moving them here is what made the
+                # dashboard report 0 completions for classes at 100% (A15).
                 await pipe.execute()
         
     async def position(self, tid: str) -> int:
@@ -215,7 +233,7 @@ class RedisQueueStore:
         
     async def complete(self, tid: str, state: str) -> None:
         key = f"aaac:{self.run_id}:ticket:{tid}"
-        cls_bytes = await self.r.hget(key, "class")
+        cls_bytes = await self.r.hget(key, "true_class")
         cls_val = int(cls_bytes) if cls_bytes else 0
         
         pipe = self.r.pipeline()
@@ -275,7 +293,7 @@ class InMemoryQueueStore:
             }
             self._waiting.append((seq, tid))
             self._waiting.sort(key=lambda x: x[0])
-            self._counters["waiting"][str(int(access_class))] += 1
+            self._counters["waiting"][str(int(true_class))] += 1
             
     async def get_ticket(self, tid: str) -> TicketData | None:
         async with self._lock:
@@ -305,7 +323,7 @@ class InMemoryQueueStore:
                 t["expires_at"] = exp
                 self._inflight.append((exp, tid))
                 admitted.append((tid, exp))
-                self._counters["waiting"][str(int(t["class"]))] -= 1
+                self._counters["waiting"][str(int(t["true_class"]))] -= 1
             self._inflight.sort(key=lambda x: x[0])
             return admitted
             
@@ -315,7 +333,7 @@ class InMemoryQueueStore:
     ) -> None:
         async with self._lock:
             t = self._tickets[tid]
-            old_class = str(int(t["class"]))
+            true_key = str(int(t["true_class"]))
             if new_class is not None:
                 t["class"] = new_class
             if attempt is not None:
@@ -324,19 +342,16 @@ class InMemoryQueueStore:
             self._inflight = [(e, t_id) for e, t_id in self._inflight if t_id != tid]
             self._waiting.append((score, tid))
             self._waiting.sort(key=lambda x: x[0])
-            self._counters["timed_out"][old_class] += 1
-            self._counters["waiting"][str(int(t["class"]))] += 1
+            self._counters["timed_out"][true_key] += 1
+            self._counters["waiting"][true_key] += 1
             
     async def update_class(self, tid: str, new_class: AccessClass) -> None:
         async with self._lock:
             t = self._tickets.get(tid)
             if t:
-                old_cls = str(int(t["class"]))
-                new_cls = str(int(new_class))
-                if old_cls != new_cls:
-                    t["class"] = new_class
-                    self._counters["waiting"][old_cls] -= 1
-                    self._counters["waiting"][new_cls] += 1
+                # No counter movement: counters are keyed by true_class, which
+                # this call does not change (A15).
+                t["class"] = new_class
             
     async def position(self, tid: str) -> int:
         async with self._lock:
@@ -370,7 +385,7 @@ class InMemoryQueueStore:
             if tid in self._tickets:
                 self._tickets[tid]["state"] = state
                 if state == "COMPLETED":
-                    cls_val = str(int(self._tickets[tid]["class"]))
+                    cls_val = str(int(self._tickets[tid]["true_class"]))
                     self._counters["completed"][cls_val] += 1
             self._inflight = [(e, t) for e, t in self._inflight if t != tid]
             

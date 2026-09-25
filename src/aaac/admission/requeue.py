@@ -6,7 +6,13 @@ from aaac.common.config import RunConfig
 from aaac.common.events import EventLogger
 
 
-async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: RunConfig, reason: str | None = None) -> None:
+async def handle_timeout(
+    tid: str,
+    store: QueueStore,
+    logger: EventLogger,
+    cfg: RunConfig,
+    reason: str | None = None,
+) -> None:
     """C4: Non-Regressive Re-Queue Policy.
     
     Called by the AdmissionController when a ticket's window expires while inflight.
@@ -46,16 +52,25 @@ async def handle_timeout(tid: str, store: QueueStore, logger: EventLogger, cfg: 
     new_class = ticket.access_class
     score = ticket.join_seq
     
-    if cfg.mode == "baseline":
-        # Baseline mode represents the divergent loop (reset-on-failure).
-        # Put the user at the tail of the queue, don't change their class.
-        score = await store.next_seq()
+    # The class degrades monotonically in EVERY mode — invariant I2, and M1's
+    # tests assert it directly. What differs by mode is the QUEUE POSITION, and
+    # what the class is allowed to affect.
+    if ticket.attempt >= cfg.admission.max_attempts:
+        new_class = AccessClass.LOW
     else:
-        # AAAC mode: downgrade class, keep score the same (non-regressive)
-        if ticket.attempt >= cfg.admission.max_attempts:
-            new_class = AccessClass.LOW
-        else:
-            new_class = downgrade(ticket.access_class)
+        new_class = downgrade(ticket.access_class)
+
+    if cfg.mode != "aaac":
+        # `baseline` and `none`: reset-on-failure — the client goes to the tail
+        # and loses its place. Only `aaac` keeps the score (C4, non-regressive).
+        #
+        # Note this does NOT let payload adaptation leak into the control
+        # conditions: the admit token is pinned to HIGH/`full` outside `aaac`
+        # by the gate in api.py:queue_status (INTEGRATION-ISSUES.md A1). An
+        # earlier attempt suppressed the downgrade here instead, which broke I2
+        # — the class stopped degrading, a later estimate raised it, and
+        # access_class went 1 -> 0, an upgrade.
+        score = await store.next_seq()
             
     if new_class != ticket.access_class:
         await logger.log(

@@ -16,7 +16,6 @@ from aaac.evaluation.experiment import (
     SyntheticRunner,
     run_matrix,
 )
-from aaac.evaluation.population import generate
 from aaac.origin.config import LoadConfig
 
 CFG = LoadConfig(
@@ -85,13 +84,28 @@ def test_the_population_is_generated_once_and_reused(tmp_path: Path) -> None:
     assert (tmp_path / "population-1.json").read_bytes() == before
 
 
-def test_the_real_runner_says_exactly_what_is_missing(tmp_path: Path) -> None:
-    runner = ComposeRunner()
-    with pytest.raises(ExperimentError) as exc:
-        runner.run(1, "none", generate(1, CFG), tmp_path)
-    message = str(exc.value)
-    assert "admission service" in message
-    assert "run_client" in message
+def test_the_real_runner_refuses_to_run_without_docker() -> None:
+    # ComposeRunner is implemented now, so it no longer raises "not yet
+    # possible". What still must hold is that it fails loudly rather than
+    # returning something that could be mistaken for a measurement. Patched
+    # rather than executed: §3.10 rule 4 keeps Docker out of the unit suite.
+    import shutil
+
+    original = shutil.which
+    shutil.which = lambda _name: None  # type: ignore[assignment]
+    try:
+        with pytest.raises(ExperimentError, match="docker"):
+            ComposeRunner().prepare()
+    finally:
+        shutil.which = original  # type: ignore[assignment]
+
+
+def test_the_real_runner_does_not_mark_its_output_as_synthetic() -> None:
+    # SyntheticRunner prefixes its logs so fabricated data cannot reach the
+    # write-up. The real runner must NOT carry that prefix, or a genuine run
+    # would be discarded as synthetic.
+    assert ComposeRunner().prefix == ""
+    assert SyntheticRunner().prefix == synth.SYNTHETIC_PREFIX
 
 
 def test_synthetic_logs_are_named_so_they_cannot_be_mistaken(result: Any) -> None:

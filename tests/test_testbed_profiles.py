@@ -88,11 +88,27 @@ def test_client_containers_have_net_admin(compose: dict) -> None:
         assert "NET_ADMIN" in compose["services"][service]["cap_add"], service
 
 
+def _compose_default(value: str) -> str:
+    """Resolve a `${VAR:-default}` reference to its default; pass literals through.
+
+    The direction is parameterised so a kernel without the `ifb` module can fall
+    back to egress. What this file pins is the *default*: an unparameterised run
+    must still shape downstream.
+    """
+    v = value.strip()
+    if v.startswith("${") and v.endswith("}") and ":-" in v:
+        return v[2:-1].split(":-", 1)[1]
+    return v
+
+
 def test_clients_shape_the_downstream_path_by_default(compose: dict) -> None:
     # The ~450 KB page travels downstream. Shaping only egress would leave the
     # LOW class effectively unthrottled and the experiment would measure nothing.
+    # Overriding AAAC_NETEM_DIRECTION=egress is allowed, but it makes the run an
+    # invalid measurement of the completion gap and must be recorded as such.
     for service in SERVICE_FOR.values():
-        assert compose["services"][service]["environment"]["AAAC_NETEM_DIRECTION"] == "ingress"
+        direction = compose["services"][service]["environment"]["AAAC_NETEM_DIRECTION"]
+        assert _compose_default(direction) == "ingress", service
 
 
 def test_origin_is_published_on_the_contracted_port(compose: dict) -> None:

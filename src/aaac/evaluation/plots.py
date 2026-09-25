@@ -374,20 +374,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--synthetic", action="store_true", help="FABRICATED DATA")
     args = parser.parse_args(argv)
 
-    from aaac.evaluation.experiment import SyntheticRunner, run_matrix
+    from aaac.evaluation.experiment import (
+        ExperimentError,
+        SyntheticRunner,
+        load_matrix,
+        run_matrix,
+    )
     from aaac.origin.config import load_run_config
 
-    if not args.synthetic:
-        print(
-            "plots: no real event logs exist yet — M1's admission service is the single\n"
-            "writer of the event log (§3.8) and is not in the repository. Re-run with\n"
-            "--synthetic to regenerate the figures from fabricated data.",
-        )
-        return 2
-
-    load_cfg = load_run_config().require_load()
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    result = run_matrix(seeds, list(MODE_ORDER), SyntheticRunner(), args.results, load_cfg)
+
+    if args.synthetic:
+        # FABRICATED DATA. Generates events and writes them into --results.
+        load_cfg = load_run_config().require_load()
+        result = run_matrix(
+            seeds, list(MODE_ORDER), SyntheticRunner(), args.results, load_cfg
+        )
+    else:
+        # Read what M1's admission service actually wrote. This used to refuse
+        # outright, and --synthetic would have fabricated over a real
+        # measurement (INTEGRATION-ISSUES.md A16).
+        try:
+            result = load_matrix(seeds, list(MODE_ORDER), args.results)
+        except ExperimentError as exc:
+            print(f"plots: {exc}")
+            return 2
+
     from aaac.evaluation.events import EventLog
 
     representative = result.for_mode("aaac")[0]

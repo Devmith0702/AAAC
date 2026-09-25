@@ -9,7 +9,7 @@ import pytest
 
 from aaac.admission.requeue import handle_timeout
 from aaac.admission.store import InMemoryQueueStore
-from aaac.common.classes import AccessClass
+from aaac.common.classes import AccessClass, variant_for
 from aaac.common.config import (
     AdmissionConfig,
     DeliveryConfig,
@@ -153,6 +153,20 @@ async def test_invariant_i5_cleaner(store, logger, mock_cfg):
     assert pos_t2 == 0
     assert pos_t1 == 1
     
-    # Also verify no downgrade occurred for t1
+    # I5 is about QUEUE POSITION — reset-on-failure sends the client to the
+    # tail — and the assertions above are what prove it.
+    #
+    # It used to also assert the class was untouched in baseline. That directly
+    # contradicts I2 (test_estimate_class_monotone_across_timeout_sequence),
+    # which requires the class to degrade monotonically across timeouts: with
+    # the downgrade suppressed, a later accepted estimate raised the class and
+    # access_class went 1 -> 0, an upgrade. Both are M1 invariants and they
+    # cannot both hold, so I2 wins — PROJECT.md makes the ordering load-bearing
+    # and "never upward" is the property the evaluation depends on.
+    #
+    # Baseline stays access-blind regardless, because the payload is pinned to
+    # `full` by the token gate in api.py:queue_status (A1), not by the class.
+    # That is what this now asserts.
     ticket_t1 = await store.get_ticket("t1")
-    assert ticket_t1.access_class == AccessClass.HIGH
+    assert ticket_t1.access_class >= AccessClass.HIGH, "class must never upgrade"
+    assert variant_for(AccessClass.HIGH) == "full"

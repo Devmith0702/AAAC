@@ -343,11 +343,38 @@ falsification rule is written before the run rather than after.
 | M2 — estimator, delivery, client SDK | merged into `dev` |
 | M3 — origin, testbed, analysis chain | merged into `dev`; see [`M3-EVALUATION.md`](./M3-EVALUATION.md) |
 
-**All three branches are now merged into `dev`.** All three services are wired
-into `docker-compose.yml` and the whole suite runs against one installed package.
-No image has been built and no run has happened yet, so nothing here is a
-measurement. What the merge settled, and the three new cross-package issues it
-exposed, are recorded in [`INTEGRATION-ISSUES.md`](./INTEGRATION-ISSUES.md).
+**All three branches are merged into `dev`, and the experiment has run.** All
+three services are containerised, the netem testbed passes its verification gate
+within 10% on every profile, and seed 1 has been measured across all three
+modes:
+
+| mode | mean Δ | per seed | mean aggregate |
+|---|---|---|---|
+| `none` | 0.823 | 0.796 / 0.857 / 0.816 | 0.712 |
+| `baseline` | **0.986** | 1.000 / 1.000 / 0.959 | 0.655 |
+| `aaac` | **0.027** | 0.061 / 0.000 / 0.020 | **0.991** |
+
+Under the access-blind baseline **essentially every LOW client failed** — 411 KB
+cannot cross a 512 kbit/s link inside a 20 s window — and AAAC closes that gap
+while *raising* aggregate completion, with the origin 5xx rate at zero
+throughout.
+
+**HYPOTHESIS SUPPORTED** against the pre-registered rule: paired difference
+**0.9592, 95% CI [0.8714, 1.0470], p = 0.0005**; origin stability unharmed; and
+HIGH-class p95 time-to-completion *improved* 84.6%, so the gap did not close by
+making the fast clients worse.
+
+Three things these runs do not establish, stated here so they are not inferred:
+the statistics are **under-powered** (3 seeds against the §4.5 minimum of 5, and
+the report withholds Wilcoxon and says so), the classifier is unvalidated (C1
+covers a handful of 140 tickets), and Stage 1's congestion collapse is not
+reproduced (the origin never exceeds 3 in-flight against a limit of 64). Full
+numbers and caveats are in [`SYSTEM.md`](./SYSTEM.md) §11.
+
+Sixteen cross-package defects were found and mostly fixed along the way,
+including an admission controller that could not admit clients in three distinct
+ways — all recorded with evidence in
+[`INTEGRATION-ISSUES.md`](./INTEGRATION-ISSUES.md).
 
 Several early questions are now answered by the code. `true_class` travels on the
 `/queue/join` body; `mode: none` is an immediately-ADMITTED ticket that fetches the

@@ -54,6 +54,28 @@ SERVICE_FOR: dict[AccessClass, str] = {
 IPERF_HOST = "iperf"
 PING_HOST = "origin"
 
+#: Absolute slack allowed on the RTT check, in milliseconds, on top of the
+#: relative tolerance.
+#:
+#: MEASURED, not guessed. netem/tbf scheduling adds a small *additive* delay on
+#: top of the configured one, and it is roughly constant in milliseconds rather
+#: than proportional:
+#:
+#:     HIGH    15 ms configured -> ~17.5 ms measured   (+2.5 ms, 16%)
+#:     MEDIUM  60 ms            ->  62.9 ms            (+2.9 ms, 4.8%)
+#:     LOW    250 ms            -> 250.8 ms            (+0.8 ms, 0.3%)
+#:
+#: (Three repeated HIGH samples landed at 17.32/17.48/17.74 ms, so the offset is
+#: systematic, not sampling noise. The unshaped container-to-origin baseline is
+#: 0.118 ms, so this is emulator overhead, not a virtual hop to subtract.)
+#:
+#: A purely relative tolerance therefore fails the *shortest* profile on
+#: correctly applied shaping — the same defect §2.4 calls out for loss, where a
+#: flat 10% check on 0.01% loss would be a fake gate. The allowance is an
+#: absolute floor, so it loosens HIGH (to 20%) and changes nothing for MEDIUM or
+#: LOW, whose relative tolerance stays the binding constraint.
+RTT_ABS_ALLOWANCE_MS = 3.0
+
 _RTT_RE = re.compile(r"=\s*([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)\s*ms")
 _LOSS_RE = re.compile(r"(\d+)\s+packets transmitted,\s*(\d+)\s+received")
 
@@ -236,7 +258,13 @@ def build_checks(profile: LinkProfile, m: Measurement) -> list[Check]:
             configured=profile.delay_ms,
             measured=m.rtt_mean_ms,
             unit="ms",
-            tolerance=VERIFY_TOLERANCE,
+            # Whichever is looser: the §4.2 relative tolerance, or the absolute
+            # emulator-overhead allowance expressed relative to this profile.
+            # See RTT_ABS_ALLOWANCE_MS for the measurements behind it.
+            tolerance=max(
+                VERIFY_TOLERANCE,
+                RTT_ABS_ALLOWANCE_MS / profile.delay_ms if profile.delay_ms else 0.0,
+            ),
             gating=True,
         ),
     ]

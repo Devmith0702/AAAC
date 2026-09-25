@@ -22,7 +22,8 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir .
+# See the note in origin.Dockerfile: retry rather than fail a long download.
+RUN pip install --no-cache-dir --retries 5 --timeout 60 .
 
 COPY src/aaac/evaluation/testbed/netem.sh /usr/local/bin/netem.sh
 RUN chmod +x /usr/local/bin/netem.sh

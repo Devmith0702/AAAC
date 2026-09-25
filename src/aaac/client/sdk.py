@@ -61,7 +61,26 @@ from aaac.estimator.infer import classify
 
 #: Give up on a admission service that has failed this many times in a row.
 #: Hammering a dead server produces noise, not data.
-MAX_CONSECUTIVE_ADMISSION_FAILURES = 5
+MAX_CONSECUTIVE_ADMISSION_FAILURES = 15
+
+#: Timeout for one /queue/status poll, in seconds.
+#:
+#: `timed_poll` defaults to 10 s, which is fine on a fast link and wrong on a
+#: slow one. On the LOW profile — 250 ms RTT, 3% loss, 512 kbit/s shared by up
+#: to 16 admitted clients while a 411 KB transfer is in flight — a tiny status
+#: poll can take far longer than 10 s, and `timed_poll` reports any HTTPError
+#: as `response=None`, which counts as an admission failure.
+#:
+#: Measured: a `none` cell returned ADMISSION_UNAVAILABLE for 17 of 49 LOW
+#: clients while HIGH and MEDIUM returned zero. The admission service was
+#: healthy throughout (origin served 1,257 requests, 0 rejected). The client was
+#: reporting "my link is slow" as "the infrastructure is broken" — precisely the
+#: distinction this outcome exists to preserve, and one that silently moves
+#: LOW's completion rate, the headline number.
+#:
+#: Raising the tolerance with it: 5 consecutive failures is a low bar when 3% of
+#: packets are dropped by design.
+ADMISSION_POLL_TIMEOUT_S = 45.0
 
 #: Floor on the poll interval, so a misconfigured server cannot make the client
 #: spin. Not a behaviour change: M1 supplies 2000 ms.
@@ -231,7 +250,9 @@ async def run_client(
                 return finish(Outcome.ABANDONED, ticket_id=ticket_id,
                               error="abandon_after_s exceeded")
 
-            response, rtt_ms, ok = await timed_poll(adm, status_url)
+            response, rtt_ms, ok = await timed_poll(
+                adm, status_url, timeout_s=ADMISSION_POLL_TIMEOUT_S
+            )
             session.polls += 1
             session.observation.record_request(ok, rtt_ms if ok else None)
 
@@ -337,6 +358,10 @@ async def run_client(
                     token=status.admit_token,
                     index_no=index_no,
                     expires_at=status.expires_at,
+                    # Wall-clock instant this client stops caring. `elapsed()`
+                    # is monotonic seconds since the client started, while
+                    # expires_at is unix time, so convert before comparing.
+                    patience_deadline=time.time() + (abandon_after_s - elapsed()),
                     session=session,
                 )
                 if result is not None:
@@ -367,6 +392,7 @@ async def _attempt_transfer(
     token: str,
     index_no: str,
     expires_at: float | None,
+    patience_deadline: float | None,
     session: _Session,
 ) -> tuple[Outcome, dict] | None:
     """Fetch the page and report it. None means "missed the window, keep going".
@@ -375,7 +401,21 @@ async def _attempt_transfer(
     whole (see client/fetch.py). A page that is not finished is not delivered.
     """
     url = f"{delivery_base.rstrip('/')}/result?token={token}&index={index_no}"
-    transfer = await fetch_page(dlv, url, expires_at=expires_at)
+
+    # A student gives up after `abandon_after_s` no matter how long a window the
+    # server granted. Without this bound the fetch deadline is `expires_at`
+    # alone, and in `none` mode that is 3600 s — a LOW client fetching 411 KB
+    # over a congested link sat inside ONE fetch for the better part of an hour,
+    # never returning to the poll loop where patience is checked. Measured: a
+    # `none` cell ran 58 minutes with ABANDON 0 and one ticket timing out 80
+    # times. The deadline is now whichever expires first.
+    deadline = expires_at
+    if patience_deadline is not None:
+        deadline = (
+            patience_deadline if deadline is None else min(deadline, patience_deadline)
+        )
+
+    transfer = await fetch_page(dlv, url, expires_at=deadline)
 
     reported = await _report_complete(
         adm,
@@ -385,6 +425,10 @@ async def _attempt_transfer(
         n_bytes=transfer.bytes,
         duration_ms=transfer.duration_ms,
         variant=transfer.variant,
+        # The same token this attempt used to fetch the page. Without it the
+        # admission service 403s a successful completion and the COMPLETE never
+        # reaches the event log, so the client reads as never having finished.
+        admit_token=token,
     )
 
     common = {
@@ -416,22 +460,34 @@ async def _report_complete(
     n_bytes: int,
     duration_ms: float,
     variant: str,
+    admit_token: str | None = None,
 ) -> bool:
     """POST /queue/complete. Returns whether the report landed.
 
     `bytes` and `duration_ms` cover the document AND its sub-resources, per the
     CONTRACT CHANGE recorded in CLAUDE.md section 4.2.
     """
+    payload: dict[str, object] = {
+        "ticket_id": ticket_id,
+        "ok": ok,
+        "bytes": n_bytes,
+        "duration_ms": duration_ms,
+        "variant": variant,
+    }
+    # The admission service rejects a successful completion that carries no
+    # admit token (403), which the SDK can only report as COMPLETED_UNREPORTED
+    # — a client that finished but whose COMPLETE never reached the log. It is
+    # sent ONLY on success: on a failure the ticket may already have been
+    # re-queued with a higher attempt, and the service compares the token's
+    # `att` against the ticket's, so sending a stale one would lose the failure
+    # report as well.
+    if ok and admit_token:
+        payload["admit_token"] = admit_token
+
     try:
         response = await adm.post(
             f"{admission_base.rstrip('/')}/queue/complete",
-            json={
-                "ticket_id": ticket_id,
-                "ok": ok,
-                "bytes": n_bytes,
-                "duration_ms": duration_ms,
-                "variant": variant,
-            },
+            json=payload,
         )
     except httpx.HTTPError:
         return False

@@ -12,12 +12,12 @@
 # (burst_fraction = 0.8, also written into every population file). The results
 # directory comes from AAAC_RESULTS_DIR, which M1 reads too.
 
-seed: 1
-run_id: s1-none
+seed: 3
+run_id: s3-aaac
 # none | baseline | aaac (CLAUDE.md §3.4). The admission service reads the mode
 # from this file only — it honours no environment override — so this value, not
 # `make run MODE=...`, is what M1's service runs as. See INTEGRATION-ISSUES.md A8.
-mode: none
+mode: aaac
 
 admission:
   w_base_s: 20.0
@@ -47,11 +47,26 @@ origin:
   concurrency_limit: 64
   queue_limit: 256 # beyond this, 503
 
+# SCALED REPLICATION (2026-09-24). The full population is 20,000 clients; at
+# that size `mode: none` alone needs ~12.5 h, because all 7,000 LOW clients share
+# one 512 kbit/s shaped link to fetch a 411 KB page each. These values shrink the
+# run to minutes so the matrix can be executed and reported the same day. What
+# survives the scaling is the completion gap itself: 49 LOW clients sharing
+# 64 KB/s still cannot fetch 411 KB inside a 20 s window, while 35 HIGH clients
+# finish in ~2 s. What does NOT survive is origin congestion collapse — at this
+# size the origin never approaches concurrency_limit, so Stage 1's collapse is
+# not reproduced and must not be claimed from these runs.
+# Restore with: n_clients 20000, burst_center_s 30, burst_sigma_s 15,
+#               tail_decay_s 600, abandon_after_s 900.
 load:
-  n_clients: 20000
+  n_clients: 140
   scale_factor: 10 # represents 200k real users
-  burst_center_s: 30
-  burst_sigma_s: 15
-  tail_decay_s: 600
+  burst_center_s: 10
+  burst_sigma_s: 5
+  tail_decay_s: 30
   class_mix: { HIGH: 0.25, MEDIUM: 0.40, LOW: 0.35 }
-  abandon_after_s: 900
+  # Client patience. 300 s still exceeds the ~102 s a LOW client needs for a
+  # full page when 16 share the link, so clients abandon because the system
+  # failed them, not because the scaling starved them — while keeping a `none`
+  # or `baseline` cell to roughly 6 minutes instead of an hour.
+  abandon_after_s: 300

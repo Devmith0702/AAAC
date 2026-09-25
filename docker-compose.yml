@@ -22,9 +22,20 @@ x-client-common: &client-common
   volumes:
     - ./configs:/app/configs:ro
     - ./results:/app/results
+    # The client SDK classifies its own link (C1), so it needs the exported
+    # bundle. client.Dockerfile copies only src/, so without this mount every
+    # client falls back to MEDIUM and the classifier figures measure nothing.
+    - ./models:/app/models:ro
+    # The client image bakes the SDK in via `pip install .`, so a fix to
+    # src/aaac/client/ does not reach these containers without a rebuild — and a
+    # rebuild re-downloads the whole dependency set three times. Mounting the
+    # source and putting it first on PYTHONPATH gives the containers the working
+    # tree directly, which is what an editable install does on the host.
+    - ./src:/app/src:ro
   environment: &client-env
     AAAC_CONFIG: /app/configs/run.yaml
     AAAC_NETEM_IFACE: eth0
+    PYTHONPATH: /app/src
     # Downstream is the direction that carries the ~450 KB page, so it is the
     # one that must be shaped. See the header of netem.sh.
     AAAC_NETEM_DIRECTION: ${AAAC_NETEM_DIRECTION:-ingress}
@@ -61,9 +72,14 @@ services:
     volumes:
       - ./configs:/app/configs:ro
       - ./results:/app/results
+      # Same reason as the client containers: the image bakes the package in via
+      # `pip install .`, so a fix to admission/ or common/ does not reach this
+      # container without a full rebuild. The A1 payload gate lives here.
+      - ./src:/app/src:ro
     environment:
       AAAC_CONFIG_PATH: /app/configs/run.yaml
       AAAC_CONFIG: /app/configs/run.yaml
+      PYTHONPATH: /app/src
       AAAC_RESULTS_DIR: /app/results
       AAAC_RUN_ID: ${AAAC_RUN_ID:-dev}
       AAAC_REDIS_URL: redis://redis:6379/0
@@ -81,8 +97,10 @@ services:
       - "127.0.0.1:8001:8001"
     volumes:
       - ./configs:/app/configs:ro
+      - ./src:/app/src:ro
     environment:
       AAAC_CONFIG_PATH: /app/configs/run.yaml
+      PYTHONPATH: /app/src
       AAAC_ORIGIN_BASE: http://origin:8002
       AAAC_TOKEN_SECRET: ${AAAC_TOKEN_SECRET:?set AAAC_TOKEN_SECRET (see .env.example)}
 

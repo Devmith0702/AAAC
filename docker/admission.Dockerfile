@@ -11,7 +11,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 COPY README.md ./
-RUN pip install --no-cache-dir .
+# See the note in origin.Dockerfile: retry rather than fail a long download.
+RUN pip install --no-cache-dir --retries 5 --timeout 60 .
 
 # configs/ and results/ are bind-mounted by docker-compose.yml so a run can be
 # re-parameterised without rebuilding the image.

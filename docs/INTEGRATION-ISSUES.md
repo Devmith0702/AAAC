@@ -9,7 +9,7 @@ owner's decision; record the resolution under the item when it is made.
 
 | # | Issue | Owner | Blocks | Status |
 |---|---|---|---|---|
-| A1 | `baseline` applies payload adaptation | M1 | Stage 2 | OPEN — confirmed in a live run |
+| A1 | `baseline` applies payload adaptation | M1 | Stage 2 | FIXED — was measured at 137/137 `reduced` |
 | A2 | A failed transfer ends the ticket instead of re-queueing it | M1 + M2 | Stage 2 | OPEN |
 | A3 | M1's config loader rejects unknown keys | M3 | — | RESOLVED (M3 side) |
 | A4 | Gaps in the event log | M1 (+ M2) | goodput, classifier scoring | OPEN |
@@ -19,6 +19,12 @@ owner's decision; record the resolution under the item when it is made.
 | A8 | `mode` cannot be set per run; the file is the only source | M1 | mode matrix (§4.5) | OPEN |
 | A9 | The origin's record and the delivery templates disagreed | M3 + M2 | every real run | FIXED |
 | A10 | Compose let the origin and the admission service run different modes | M3 | every real run | FIXED |
+| A11 | A failed transfer downgrades the client in `none` mode too | M1 | Stage 1 control condition | FIXED |
+| A12 | The capacity estimate collapses, so the queue admits nobody | M1 | every mode | FIXED |
+| A13 | Redis is never flushed between runs | M3 | every run in a matrix | FIXED |
+| A14 | The client reports a slow link as a dead admission service | M2 | LOW-class completion | FIXED |
+| A15 | The live dashboard shows 0 completions for classes at 100% | M1 | the demo, not the data | FIXED |
+| A16 | `plots.py` / `report.py` cannot read real logs, and overwrite them | M3 | every figure and report | FIXED |
 
 ---
 
@@ -217,6 +223,235 @@ then refuses it for holding more than one run. Every real run must pass its own
 (`make up RUN_ID=s1-aaac`). M1's service generates a unique id when the variable
 is absent, but the origin would not know it, so the two logs could not be paired
 — which is why the variable cannot simply be dropped.
+
+## A11 — a failed transfer downgrades the client in `none` mode too
+
+Found in live data, not by reading: the first shaped run of `mode: none` emitted
+**4 × TIMEOUT, 4 × DOWNGRADE and 4 × REQUEUE** among 140 clients.
+
+`none` admits every ticket immediately with a 3600 s window, so a window expiry
+cannot happen inside a five-minute run. These came from the other entry to the
+same code path — `queue_complete` with `ok=false` now calls `handle_timeout` —
+and `requeue.py` branches only on `baseline`:
+
+```python
+if cfg.mode == "baseline":
+    score = await store.next_seq()        # reset-on-failure: go to the tail
+else:
+    new_class = downgrade(ticket.access_class)   # AAAC behaviour
+```
+
+So under `none`, a client whose transfer fails is **downgraded** — HIGH to
+MEDIUM — and its retry is served `reduced` instead of `full`. `none` is supposed
+to be the portal as it exists today, with no adaptation of any kind, so the
+control condition quietly acquires C3. This is A1 displaced into `none`: there,
+payload adaptation leaks into `baseline`; here it leaks into `none`.
+
+**Magnitude, stated honestly:** 4 of 140 clients in the run observed, so it moves
+the headline numbers very little at this scale. It matters because the control
+condition is supposed to be *definitionally* free of the mechanism, not
+approximately free of it.
+
+**Question for M1:** should the downgrade branch be gated on `mode == "aaac"`
+rather than `!= "baseline"`, leaving `none` to re-queue without touching class?
+
+Noted while a matrix was running; deliberately not patched mid-run, because
+changing admission behaviour between runs would break the paired comparison the
+whole experiment rests on.
+
+## A12 — the capacity estimate collapses and the queue admits nobody — FIXED
+
+C5 computes `C_max = ceil(mu_hat * W_mean)` and admits
+`min(alpha * tick, C_max - in_flight, waiting)`. `mu_hat` was an EWMA with a
+fixed coefficient:
+
+```python
+self.mu_hat = (0.3 * rate) + (0.7 * self.mu_hat)   # on a 1 s tick
+```
+
+That is a **~3 second memory**. A LOW client needs ~300 s to fetch a 411 KB page
+over 512 kbit/s, so nearly every tick observes zero completions, `mu_hat` decays
+to zero, `C_max = ceil(0 * W_mean) = 0`, and
+`capacity_limit = max(0, 0 - in_flight) = 0` — the queue admits **nobody**. It
+cannot recover on its own, because admitting nobody produces no completions to
+raise `mu_hat` again.
+
+**Measured on the shaped testbed, before the fix:**
+
+| run | C_max ≤ 1 | mu_hat median |
+|---|---|---|
+| s1-baseline | **82%** of ticks | 0.000 |
+| s1-aaac | **90%** of ticks | 0.000 |
+
+This starved LOW in *every* mode (completion 0.041 / 0.163 / 0.143), which would
+have masked any real AAAC benefit — `aaac` scored no better than `baseline`
+because neither was admitting anyone.
+
+**Resolution, in three parts — the first two were not enough on their own:**
+
+1. **The EWMA horizon.** The coefficient is now derived as
+   `control_tick_s / MU_HAT_HORIZON_S` with a 60 s horizon, so the estimator's
+   memory exceeds the service time it is estimating.
+
+2. **The unbounded cold start had to go.** `C_max` was `inf` until the first
+   completion, which deadlocked in the opposite direction: if nothing completes,
+   the gate never lifts, every waiting client is admitted at once, they contend
+   for one shared link, and none finishes inside its window. Measured under
+   `baseline`: **C_max was the inf sentinel on 736 of 736 ticks**, `in_flight`
+   median 47 of 49, 1,829 admits, 1,820 timeouts, zero completions.
+
+3. **The floor must not itself be the bottleneck.** A floor of **1 was tried and
+   is wrong.** The reasoning — one client at a time gets the whole link — is true
+   of the *transfer* and false of the *queue*: 49 LOW clients are then served
+   sequentially through a single slot while all of them burn the same abandon
+   timer. Measured under `aaac`: C_max pinned at 1 for all 637 ticks, **15 admits
+   for 49 clients in 10 minutes, 47 abandoned without ever being admitted,
+   1/49 completions**.
+
+   The floor is now `origin.concurrency_limit // MIN_C_MAX_ORIGIN_FRACTION`,
+   tying it to the thing `C_max` exists to protect. The binding constraint is
+   the shaped link, not the origin: at the gate's measured 16 KB/s TCP goodput
+   for LOW, all 49 clients sharing the link fetch `essential` (1,909 B) in
+   ~5.7 s against a 50 s window, while the same 49 sharing it for `full`
+   (411 KB) need ~1,231 s against a 20 s window and all miss. **Payload
+   adaptation is what separates those outcomes**, so the cap must not stop
+   clients reaching it. The origin was measured at max 3 in-flight with 0
+   rejections, so a quarter of its limit is conservative.
+
+**Verified on the shaped testbed.** The same probe — 49 LOW clients under
+`aaac`, seed 1 — run against each state of the controller:
+
+| controller state | C_max | LOW completion | wall clock |
+|---|---|---|---|
+| unbounded cold start | `inf` on 736/736 ticks | **0/49** | 658 s of retry cycles |
+| floor = 1 | 1 on 637/637 ticks | **1/49** | 636 s, 47 never admitted |
+| floor = `concurrency_limit // 4` = 16 | 16, `in_flight` median 15 | **45/49 = 0.918** | **72.8 s** |
+
+`mu_hat` recovered to a median of 0.077 in the last of these, so the estimator
+is tracking capacity rather than sitting at zero. For contrast, the same 49 LOW
+clients under `baseline` — where the A1 gate correctly pins the payload to
+`full` — complete **0/49**: 411 KB cannot cross a 512 kbit/s link inside a 20 s
+window at the 16 KB/s TCP goodput the gate measured.
+
+Two tests pin it: the EWMA arithmetic against the horizon, and the property that
+`mu_hat` survives a 30-tick gap between completions. The I3 invariant test was
+also rewritten — it had been recomputing `C_max` from a copy of the
+implementation's formula (including a `mu_hat > 0` gate the controller itself
+documents as a bug), so it compared against a number the controller never used.
+It now reads `C_max` from the controller's own `CONTROL` event.
+
+## A13 — Redis is never flushed between runs — FIXED
+
+`ComposeRunner.reset_between_runs()` exists and issues `FLUSHALL`. Nothing ever
+called it.
+
+Every run in a matrix therefore inherited every previous run's tickets. Measured
+after eight runs: **1,608 keys in Redis** — `aaac:s1-none:ticket:*` (420),
+`aaac:s1-baseline:*` (280), `aaac:s1-aaac:*` (280), plus `s2-*`, `s3-none` and
+even the `smoke` probe. The controller sweeps those dead tickets on every tick,
+and their TIMEOUT / REQUEUE / ADMIT events are written into **whatever log is
+current** — 253 foreign events landed in one measured run, inflating ADMIT
+counts and corrupting attempt and timeout statistics for tickets that no longer
+existed.
+
+This is the single largest source of the run-to-run chaos seen all afternoon,
+and it is invisible in any single log: the events look perfectly well-formed.
+
+**Resolution:** `ComposeRunner.run()` now flushes Redis after the services are
+up and before load starts, so the store is empty exactly when the run begins.
+
+## A14 — the client reports a slow link as a dead admission service — FIXED
+
+`timed_poll` defaulted to a 10 s timeout, and any `httpx.HTTPError` returns
+`response=None`, which counts toward `MAX_CONSECUTIVE_ADMISSION_FAILURES` (5).
+On the LOW profile — 250 ms RTT, 3% loss, 512 kbit/s shared by up to 16 admitted
+clients while a 411 KB transfer is in flight — a tiny status poll routinely
+exceeds 10 s, and five in a row is unremarkable.
+
+Measured: a `none` cell returned `ADMISSION_UNAVAILABLE` for **17 of 49 LOW
+clients** while HIGH and MEDIUM returned zero, against an admission service that
+was demonstrably healthy (origin served 1,257 requests, 0 rejected). Those 17
+sit in LOW's denominator, so the headline completion rate was being moved by a
+client-side timeout.
+
+The outcome exists precisely to separate "the infrastructure is broken" from
+"this client failed", and it was conflating them.
+
+**Resolution:** `ADMISSION_POLL_TIMEOUT_S = 45.0` and the tolerance raised to 15
+— five consecutive failures is a low bar when 3% of packets are dropped by
+design. `test_status_failing_repeatedly_gives_up_as_unavailable` now bounds
+retries against the constant rather than a hard-coded 8, so a genuinely dead
+server is still given up on quickly.
+
+## A15 — the live dashboard shows 0 completions for classes at 100% — OPEN
+
+M2's dashboard reads `/admin/snapshot`, whose per-class counters are keyed on
+the ticket's **current** `access_class`. C4 downgrades tickets as they retry, so
+a HIGH ticket that degrades to MEDIUM and completes increments the wrong class.
+
+Observed mid-run: the dashboard showed `HIGH completed 101, MEDIUM 0, LOW 0`
+while the event log for the same instant showed **HIGH 35/35, MEDIUM 56/56,
+LOW 10/49** by `true_class`. 101 was every completion in the run, attributed to
+one class.
+
+This changes no measurement — every number in the report is computed from the
+event log and disaggregated by `true_class` (§4.4) — but it is **actively
+misleading in a live demo**, which is the one place the dashboard is used.
+
+**Resolution:** every counter mutation in `admission/store.py` is now keyed by
+`true_class` instead of `access_class` — in the admit Lua script, `create_ticket`,
+`reinsert` and `complete`, for both the Redis and in-memory stores. `update_class`
+no longer touches counters at all: `true_class` is immutable, so moving counts
+there was the defect itself.
+
+Nothing in the control path was affected — `get_counters()` is read in exactly
+one place, `api.py:admin_snapshot`; the controller uses `waiting_count()` and
+`inflight_count()` and approximates per-class from the configured mix (A5).
+
+**Verified at runtime**, which no unit test could show, since the dashboard path
+only exists against a live store. 49 LOW clients under `aaac`:
+
+| source | completed | timed_out |
+|---|---|---|
+| `/admin/snapshot` | `{2: 49}` | `{2: 17}` |
+| event log by `true_class` | `{2: 49}` | `{2: 17}` |
+
+An exact match, where the same panel previously reported `HIGH 101, MEDIUM 0,
+LOW 0` for a run in which HIGH was 35/35 and MEDIUM 56/56.
+
+## A16 — `plots.py` and `report.py` cannot read real logs — OPEN
+
+Both refuse without `--synthetic`:
+
+> no real event logs exist yet — M1's admission service is the single writer of
+> the event log (§3.8) and is not in the repository.
+
+That guard was written before M1 was merged and is now false. Worse, the
+`--synthetic` path calls `run_matrix(..., SyntheticRunner(), ...)`, which
+**fabricates events into the results directory** — running either script to
+"render the figures" would overwrite a real measurement with invented data.
+
+**Worked around:** figures and `report-final.md` were produced by building an
+`ExperimentResult` from the logs on disk and calling `render_all()` and
+`report.render()` directly. Both render fine; only the CLI entry points are
+wrong.
+
+**Resolution:** `experiment.load_matrix(seeds, modes, results_dir)` builds an
+`ExperimentResult` from `events-{run_id}.jsonl` (paired with
+`origin-{run_id}.jsonl` where present), calling `single_mode()` on each log and
+`_assert_identical_load` across them, so a log holding two runs or a mismatched
+population is refused rather than averaged. Both CLIs now use it by default;
+`SyntheticRunner` is reachable only behind an explicit `--synthetic`.
+
+**Verified** against the seed-1 logs: `report.py --seeds 1` with no flag
+reproduced the measured numbers exactly (Δ 0.7959 / 1.0000 / 0.0612; LOW 10/49,
+0/49, 46/49), and a missing population still fails loudly —
+
+    report: .../population-9.json is missing; the population is what proves
+    every mode replayed the same load (§4.3)
+
+The final figures and `report-final.md` for all three seeds were generated
+through this path.
 
 ---
 

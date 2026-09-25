@@ -19,7 +19,11 @@ import time
 import httpx
 import pytest
 
-from aaac.client.sdk import Outcome, run_client
+from aaac.client.sdk import (
+    MAX_CONSECUTIVE_ADMISSION_FAILURES,
+    Outcome,
+    run_client,
+)
 from aaac.common.classes import AccessClass
 from aaac.common.tokens import issue_token
 from aaac.delivery.app import app as delivery_app
@@ -124,7 +128,16 @@ async def test_status_failing_repeatedly_gives_up_as_unavailable():
 
     out = await _run(handler)
     assert out.outcome is Outcome.ADMISSION_UNAVAILABLE
-    assert calls["n"] <= 8, f"kept retrying a dead server {calls['n']} times"
+    # The property is BOUNDED retries, not a specific count. The bound is tied
+    # to MAX_CONSECUTIVE_ADMISSION_FAILURES so it tracks that constant instead
+    # of silently decoupling: the tolerance was raised from 5 to 15 because a
+    # 3%-loss link made slow polls look like a dead service (17 of 49 LOW
+    # clients returned ADMISSION_UNAVAILABLE against a demonstrably healthy
+    # admission service). A dead server must still be given up on quickly.
+    budget = MAX_CONSECUTIVE_ADMISSION_FAILURES + 3
+    assert calls["n"] <= budget, (
+        f"kept retrying a dead server {calls['n']} times (budget {budget})"
+    )
 
 
 async def test_malformed_status_body_is_infrastructure_not_timeout():

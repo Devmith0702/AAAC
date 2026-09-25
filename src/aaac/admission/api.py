@@ -297,7 +297,19 @@ async def queue_status(ticket_id: str):
         now = time.time()
         ttl = ticket.expires_at - now
         if ttl > 0:
-            admit_token = issue_token(ticket_id, ticket.access_class, ticket.attempt, ttl)
+            # §3.4: ONLY `aaac` adapts the payload. Under `baseline` and `none`
+            # every client gets the full page, so the token must carry HIGH
+            # whatever the ticket's class says. Without this gate an accepted
+            # estimate — or simply the MEDIUM join placeholder — makes the token
+            # carry `reduced`, and the access-blind control condition silently
+            # acquires C3. Measured before the gate existed: `baseline` served
+            # {'reduced': 137} out of 137 completions, 5 KB instead of 411 KB,
+            # which collapsed the control's completion gap to ~0.05 and made the
+            # headline comparison meaningless (INTEGRATION-ISSUES.md A1).
+            token_class = (
+                ticket.access_class if cfg.mode == "aaac" else AccessClass.HIGH
+            )
+            admit_token = issue_token(ticket_id, token_class, ticket.attempt, ttl)
             window_s = window_for(ticket.access_class, cfg.admission, cfg.mode)
 
     return TicketStatus(
@@ -330,10 +342,19 @@ async def queue_complete(req: CompleteRequest):
     if req.admit_token:
         try:
             payload = verify_token(req.admit_token, ignore_exp=True)
-            if payload["tid"] != req.ticket_id or payload["att"] != ticket.attempt:
-                raise HTTPException(status_code=403, detail="Invalid token for this attempt")
+            # The ticket id and the HMAC signature are the security property: a
+            # client cannot forge a completion for someone else's ticket. The
+            # attempt number is NOT checked here. A client fetches with the token
+            # for attempt N, and if the sweep re-queues its ticket to N+1 before
+            # the report lands, rejecting the report throws away a transfer that
+            # really happened — the client finished, and the log says it never
+            # did (COMPLETED_UNREPORTED, measured at 4/49). The attempt guard
+            # belongs on /queue/estimate, where it stops an upgrade (D2); on a
+            # completion it only discards measurements.
+            if payload["tid"] != req.ticket_id:
+                raise HTTPException(status_code=403, detail="Token is for a different ticket")
         except TokenError as e:
-            raise HTTPException(status_code=403, detail=str(e))
+            raise HTTPException(status_code=403, detail=str(e)) from e
     elif req.ok:
         # Enforce token on successes at a minimum
         raise HTTPException(status_code=403, detail="admit_token required")
@@ -355,7 +376,10 @@ async def queue_complete(req: CompleteRequest):
         return {"state": "COMPLETED"}
     else:
         from aaac.admission.requeue import handle_timeout
-        await handle_timeout(ticket.ticket_id, store, logger, cfg, reason=req.reason)
+        # req.ticket_id, not ticket.ticket_id: TicketData has no such attribute
+        # (see its __slots__), so this raised AttributeError on every failed
+        # completion — the timeout / re-queue path.
+        await handle_timeout(req.ticket_id, store, logger, cfg, reason=req.reason)
         return {"state": "WAITING"}
 
 # ---------------------------------------------------------------------------

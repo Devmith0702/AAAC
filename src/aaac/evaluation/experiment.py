@@ -18,9 +18,13 @@ rather than quietly producing something that looks like a measurement.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +94,94 @@ def _default_scenarios(mode: str) -> synth.Scenario:
     return synth.null_scenario(mode)
 
 
+def load_matrix(
+    seeds: Sequence[int],
+    modes: Sequence[str],
+    results_dir: Path,
+) -> ExperimentResult:
+    """Build an ExperimentResult from event logs already on disk.
+
+    The figure and report generators used to refuse to run without
+    ``--synthetic`` ("no real event logs exist yet — M1's admission service is
+    not in the repository"), a guard written before M1 was merged. Worse, the
+    ``--synthetic`` path called ``run_matrix(..., SyntheticRunner(), ...)``,
+    which FABRICATES events into the same results directory — so rendering the
+    figures for a real run would have overwritten the measurement with invented
+    data (INTEGRATION-ISSUES.md A16).
+
+    This reads what the admission service actually wrote and computes nothing
+    it did not observe.
+    """
+    results_dir = Path(results_dir)
+    records: list[RunRecord] = []
+
+    for seed in seeds:
+        pop_file = population_path(results_dir, seed)
+        if not pop_file.exists():
+            raise ExperimentError(
+                f"{pop_file} is missing; the population is what proves every mode "
+                "replayed the same load (§4.3)"
+            )
+        population = load(pop_file)
+
+        for mode in modes:
+            run_id = run_id_for(seed, mode)
+            events_path = results_dir / f"events-{run_id}.jsonl"
+            if not events_path.exists():
+                raise ExperimentError(
+                    f"{events_path} is missing. Run the experiment for seed {seed} "
+                    f"mode {mode!r} first, or pass --synthetic to exercise the "
+                    "analysis chain on fabricated data instead."
+                )
+            sources = [events_path]
+            origin_path = results_dir / f"origin-{run_id}.jsonl"
+            if origin_path.exists():
+                sources.append(origin_path)
+
+            log = EventLog.read(*sources)
+            log.single_mode()
+            records.append(
+                RunRecord(
+                    seed=seed,
+                    mode=mode,
+                    run_id=run_id,
+                    events_path=events_path,
+                    population_hash=population.population_hash,
+                    metrics=compute(log),
+                )
+            )
+
+    _assert_identical_load(records)
+    return ExperimentResult(
+        records=records, seeds=list(seeds), modes=list(modes), synthetic=False
+    )
+
+
+def _wait_for_admission(
+    url: str = "http://127.0.0.1:8000/admin/snapshot", timeout_s: float = 90.0
+) -> None:
+    """Block until the admission service answers, or raise.
+
+    A fixed sleep after `--force-recreate` is a race: the load generator would
+    start against a service that is still binding its port, and every client
+    would return ADMISSION_UNAVAILABLE — an infrastructure failure that looks
+    nothing like a client that failed to finish, and would poison the run.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
+                if response.status == 200:
+                    return
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(0.5)
+    raise ExperimentError(
+        f"the admission service did not answer {url} within {timeout_s:.0f}s after "
+        "being recreated; the run would have measured an outage, not the system"
+    )
+
+
 @dataclass
 class ComposeRunner:
     """The real runner: drives the docker-compose stack for one (seed, mode).
@@ -129,22 +221,45 @@ class ComposeRunner:
         config_text = re.sub(r"^mode:.*", f"mode: {mode}", config_text, flags=re.MULTILINE)
         config_path.write_text(config_text)
         
-        # 2. Restart admission and delivery so they load the new config
+        # 2. Recreate the services carrying THIS run's id.
+        #
+        # `restart` is not enough. AAAC_RUN_ID is fixed in the container
+        # environment when the stack comes up, and M1 reads it in preference to
+        # the run_id just written into run.yaml — so every run in the matrix
+        # would append to one event log, and EventLog.single_mode() would refuse
+        # the result for holding more than one mode. The origin needs the same
+        # id, or its ORIGIN_SAMPLE log cannot be paired with M1's.
+        env = {**os.environ, "AAAC_RUN_ID": run_id}
         subprocess.run(
-            ["docker", "compose", "restart", "admission", "delivery"],
+            ["docker", "compose", "up", "-d", "--force-recreate",
+             "origin", "admission", "delivery"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        _wait_for_admission()
+
+        # Flush the queue state. `reset_between_runs` existed but was never
+        # called, so every run inherited its predecessors' tickets: 1,608 keys
+        # were found in Redis across eight runs (aaac:s1-none:ticket:* and so
+        # on). The controller sweeps those dead tickets every tick and their
+        # TIMEOUT/REQUEUE/ADMIT events land in the CURRENT run's log — 253
+        # foreign events in one measured run. Flushed after the services are up
+        # so the store is empty exactly when load starts.
+        subprocess.run(
+            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "FLUSHALL"],
             check=True, capture_output=True, text=True,
         )
-        
-        # Give the services a moment to come back up
-        import time
-        time.sleep(2.0)
         
         # 3. Drive the load generator against the compose stack
         pop_file = population_path(results_dir, seed)
         procs = []
         for cls_name in ["HIGH", "MEDIUM", "LOW"]:
             p = subprocess.Popen(
-                ["docker", "compose", "exec", "-T", f"client-{cls_name.lower()}", "python", "-m", "aaac.evaluation.loadgen", "--population", str(pop_file), "--class", cls_name]
+                [
+                    "docker", "compose", "exec", "-T", f"client-{cls_name.lower()}",
+                    "python", "-m", "aaac.evaluation.loadgen",
+                    "--population", str(pop_file),
+                    "--class", cls_name,
+                ]
             )
             procs.append(p)
             

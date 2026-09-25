@@ -117,6 +117,22 @@ def test_a_link_with_the_wrong_rtt_fails() -> None:
     assert not _measurement_for("LOW", rtt=15.0).passed
 
 
+def test_the_shortest_profile_tolerates_the_emulators_additive_overhead() -> None:
+    # netem/tbf add a roughly constant ~2-3 ms on top of the configured delay,
+    # which is 16% of HIGH's 15 ms but 0.3% of LOW's 250 ms. A purely relative
+    # tolerance therefore failed HIGH on correctly applied shaping — measured
+    # at 17.32/17.48/17.74 ms across three samples on a verified testbed.
+    assert _measurement_for("HIGH", rtt=17.5).passed
+
+
+def test_the_allowance_does_not_swallow_genuinely_wrong_shaping() -> None:
+    # The allowance is 3 ms, not a blank cheque: a HIGH link delayed like a
+    # MEDIUM one must still fail, or the gate would stop gating.
+    assert not _measurement_for("HIGH", rtt=25.0).passed
+    # And it must not have loosened the profiles it was never about.
+    assert not _measurement_for("MEDIUM", rtt=75.0).passed
+
+
 def test_tcp_goodput_below_nominal_does_not_fail_the_gate() -> None:
     # A LOW link delivering ~47% of nominal to TCP is the expected physics, not
     # a shaping fault. Gating on it would fail every correct run.
